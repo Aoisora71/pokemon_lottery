@@ -47,13 +47,16 @@
                     </div>
 
                     <div class="form-group">
-                        <label for="captchaKey">
-                            <i class="fas fa-key"></i> 2Captcha API Key
+                        <label for="lotteryCount">
+                            <i class="fas fa-list-ol"></i> Number of Lotteries to Process
                         </label>
-                        <input type="text" id="captchaKey" name="captcha_api_key" 
-                               placeholder="Enter your 2Captcha API key" 
-                               value="{{ captcha_key or '' }}">
-                        <small>Leave empty to use value from .env file</small>
+                        <input type="number" id="lotteryCount" name="lottery_count" 
+                               placeholder="Enter number of lotteries" 
+                               min="1" 
+                               max="5" 
+                               value="1" 
+                               required>
+                        <small>Number of lotteries to process (1-5). Enter 1 for first lottery only, 2 for first two, etc.</small>
                     </div>
 
                     <div class="button-group">

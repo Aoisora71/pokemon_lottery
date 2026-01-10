@@ -156,8 +156,8 @@ def log_message(message, level='info'):
     # Put in queue for background thread to emit (removed direct emit to avoid duplicates)
     log_queue.put(log_entry)
 
-def run_bot_task(excel_file_path, captcha_api_key):
-    """Run the bot in a separate thread"""
+def run_bot_task(excel_file_path, lottery_count=1):
+    """Run the bot in a separate thread. CAPTCHA API key is loaded from environment variable in bot.py"""
     global bot_status
     
     try:
@@ -166,18 +166,49 @@ def run_bot_task(excel_file_path, captcha_api_key):
         
         log_message("🚀 Starting bot...", 'info')
         
-        # Load Excel file
-        log_message(f"📄 Loading Excel file: {excel_file_path}", 'info')
-        workbook = load_workbook(excel_file_path)
+        # Load Excel file (convert to absolute path)
+        abs_excel_file_path = os.path.abspath(excel_file_path)
+        log_message(f"📄 Loading Excel file: {abs_excel_file_path}", 'info')
+        log_message(f"📄 Excel file exists: {os.path.exists(abs_excel_file_path)}", 'info')
+        log_message(f"📄 File size: {os.path.getsize(abs_excel_file_path) if os.path.exists(abs_excel_file_path) else 'N/A'} bytes", 'info')
+        
+        workbook = load_workbook(abs_excel_file_path)
         worksheet = workbook.active
         
-        # Count total rows
+        # Count total rows and track row numbers
         rows = list(worksheet.iter_rows(min_row=1, values_only=False))
-        total_rows = sum(1 for row in rows if row[0].value)
+        # Create list of (row_number, row) tuples for rows with email addresses
+        # Skip rows where column C (column 3) has "成功" status
+        data_rows = []
+        skipped_count = 0
+        total_email_count = 0
+        for i, row in enumerate(rows, start=1):
+            if row[0].value:
+                total_email_count += 1
+                # Check if column C (column 3) has "成功" status
+                column_c_value = None
+                if len(row) > 2 and row[2].value:
+                    column_c_value = str(row[2].value).strip()
+                
+                if column_c_value == "成功":
+                    skipped_count += 1
+                    log_message(f"📋 Row {i}: {row[0].value} - Column C = '成功' (will be skipped)", 'info')
+                else:
+                    data_rows.append((i, row))  # i is the actual Excel row number (1-based)
+        
+        total_rows = len(data_rows)
         bot_status['total'] = total_rows
         bot_status['progress'] = 0
         
-        log_message(f"📊 Found {total_rows} email(s) to process", 'info')
+        log_message(f"📊 Found {total_email_count} email(s) in Excel file", 'info')
+        if skipped_count > 0:
+            log_message(f"⏭️ Skipping {skipped_count} email(s) with '成功' status in Column C", 'info')
+        log_message(f"📊 Will process {total_rows} email(s)", 'info')
+        log_message(f"📄 Excel file path (absolute): {abs_excel_file_path}", 'info')
+        log_message(f"📄 Excel file exists: {os.path.exists(abs_excel_file_path)}", 'info')
+        
+        # Update excel_file_path to use absolute path for consistency throughout the function
+        excel_file_path = abs_excel_file_path
         
         # Setup Chrome driver
         log_message("🌐 Setting up Chrome browser...", 'info')
@@ -203,7 +234,9 @@ def run_bot_task(excel_file_path, captcha_api_key):
         wait = WebDriverWait(driver, 30)
         
         # Process each row
-        for idx, row in enumerate(rows, 1):
+        for progress_idx, row_tuple in enumerate(data_rows, start=1):
+            row_num, row = row_tuple  # Unpack (row_number, row) tuple
+            
             if not bot_status['running']:
                 log_message("⏹️ Bot stopped by user", 'warning')
                 break
@@ -214,16 +247,30 @@ def run_bot_task(excel_file_path, captcha_api_key):
             if not user_email:
                 continue
             
+            # Check column C (column 3) for "成功" status - skip if already successful
+            column_c_value = None
+            if len(row) > 2 and row[2].value:
+                column_c_value = str(row[2].value).strip()
+            
+            if column_c_value == "成功":
+                log_message(f"⏭️ Skipping email {user_email} (Excel row {row_num}) - Column C already shows '成功'", 'info')
+                bot_status['current_email'] = user_email
+                bot_status['progress'] = progress_idx
+                bot_status['current_step'] = f'Skipped {user_email} (already successful)'
+                continue  # Skip this email and proceed to next one
+            
             bot_status['current_email'] = user_email
-            bot_status['progress'] = idx
+            bot_status['progress'] = progress_idx
             bot_status['current_step'] = f'Processing {user_email}'
             
-            log_message(f"📧 Processing email {idx}/{total_rows}: {user_email}", 'info')
+            log_message(f"📧 Processing email {progress_idx}/{total_rows}: {user_email} (Excel row {row_num})", 'info')
             
             try:
                 # Update global EMAIL and PASSWORD for bot.py
+                # EMAIL must be from Excel file (not from .env)
+                # PASSWORD can be from Excel file or .env file
                 import bot
-                bot.EMAIL = user_email
+                bot.EMAIL = user_email  # Required from Excel
                 if user_password:
                     bot.PASSWORD = user_password
                 elif not bot.PASSWORD:
@@ -235,14 +282,125 @@ def run_bot_task(excel_file_path, captcha_api_key):
                 # Set up stop check callback for bot.py
                 bot.set_stop_check(lambda: bot_status['running'])
                 
+                # Set maximum number of lotteries to process
+                bot.set_max_lotteries(lottery_count)
+                
                 # Run lottery process
                 bot_status['current_step'] = f'Logging in as {user_email}'
-                log_message(f"🔐 Starting login process for {user_email}", 'info')
+                log_message(f"🔐 Starting login process for {user_email}. Will process up to {lottery_count} lotteries.", 'info')
+                lottery_result = None
                 try:
-                    lottery_begin(driver, wait)
+                    lottery_result = lottery_begin(driver, wait)
                 except StopIteration:
                     log_message("⏹️ Login process stopped by user", 'warning')
                     break
+                except Exception as e:
+                    log_message(f"❌ Error during lottery process: {str(e)}", 'error')
+                    # Set failure result if exception occurs
+                    lottery_result = {
+                        'results': [],
+                        'final_status': '失敗',
+                        'message': f'エラー: {str(e)[:100]}'
+                    }
+                
+                # Write result to Excel columns C and D
+                # C column (3): Final status (成功/失敗)
+                # D column (4): Detailed message
+                if lottery_result:
+                    final_status = lottery_result.get('final_status', '不明')
+                    result_message = lottery_result.get('message', '不明')
+                    log_message(f"📊 Lottery result for {user_email}: Status={final_status}, Details={result_message}", 'info')
+                    
+                    # Write results to columns C and D in the current row
+                    # row_num is the actual Excel row number
+                    try:
+                        # Convert to absolute path to ensure we're saving to the correct location
+                        abs_file_path = os.path.abspath(excel_file_path)
+                        log_message(f"📝 Attempting to write to Excel file (absolute path): {abs_file_path}", 'info')
+                        log_message(f"📝 Excel row number: {row_num}, Column C (3): {final_status}, Column D (4): {result_message}", 'info')
+                        
+                        # Check file exists and get modification time before save
+                        if os.path.exists(abs_file_path):
+                            mtime_before = os.path.getmtime(abs_file_path)
+                            log_message(f"📄 File exists. Modification time before save: {datetime.fromtimestamp(mtime_before)}", 'info')
+                        else:
+                            log_message(f"⚠️ File does not exist: {abs_file_path}", 'warning')
+                        
+                        # Close workbook if open, then reopen for writing
+                        # This ensures we have exclusive access
+                        try:
+                            workbook.close()
+                        except:
+                            pass
+                        
+                        # Reopen workbook in read-write mode
+                        workbook = load_workbook(abs_file_path)
+                        worksheet = workbook.active
+                        
+                        # Write to column C (final status)
+                        status_cell = worksheet.cell(row=row_num, column=3)
+                        status_cell.value = final_status
+                        log_message(f"✅ Set cell ({row_num}, 3) [Column C] value to: {final_status}", 'success')
+                        
+                        # Write to column D (detailed message)
+                        result_cell = worksheet.cell(row=row_num, column=4)
+                        result_cell.value = result_message
+                        log_message(f"✅ Set cell ({row_num}, 4) [Column D] value to: {result_message}", 'success')
+                        
+                        # Save workbook with absolute path (MUST save before closing)
+                        log_message(f"💾 Saving workbook to: {abs_file_path}", 'info')
+                        workbook.save(abs_file_path)
+                        
+                        # IMPORTANT: Save before closing, then close to release file lock
+                        workbook.close()
+                        
+                        # Wait a bit to ensure file system has written the changes
+                        time.sleep(0.5)
+                        
+                        # Verify file was actually updated
+                        if os.path.exists(abs_file_path):
+                            mtime_after = os.path.getmtime(abs_file_path)
+                            log_message(f"📄 File modification time after save: {datetime.fromtimestamp(mtime_after)}", 'info')
+                            if mtime_after > mtime_before:
+                                log_message(f"✅ File modification time updated - file was saved!", 'success')
+                            else:
+                                log_message(f"⚠️ File modification time did not change - file may not have been saved!", 'warning')
+                        
+                        # Reopen and verify content
+                        verify_workbook = load_workbook(abs_file_path)
+                        verify_worksheet = verify_workbook.active
+                        verify_status_cell = verify_worksheet.cell(row=row_num, column=3)
+                        verify_status_value = verify_status_cell.value
+                        verify_result_cell = verify_worksheet.cell(row=row_num, column=4)
+                        verify_result_value = verify_result_cell.value
+                        verify_workbook.close()
+                        
+                        if verify_status_value == final_status and verify_result_value == result_message:
+                            log_message(f"✅ Excel file saved and verified! Row {row_num}, Column C = '{verify_status_value}', Column D = '{verify_result_value}'", 'success')
+                            log_message(f"✅ Full file path: {abs_file_path}", 'success')
+                            log_message(f"📂 IMPORTANT: Please check this file path to see the results: {abs_file_path}", 'success')
+                            log_message(f"📂 The file is saved in the 'uploads' folder, not in your original upload location", 'info')
+                        else:
+                            log_message(f"⚠️ Verification failed:", 'warning')
+                            log_message(f"⚠️ Expected Column C: '{final_status}', got: '{verify_status_value}'", 'warning')
+                            log_message(f"⚠️ Expected Column D: '{result_message}', got: '{verify_result_value}'", 'warning')
+                            log_message(f"⚠️ Full file path: {abs_file_path}", 'warning')
+                        
+                        # Reopen workbook for next iteration
+                        workbook = load_workbook(abs_file_path)
+                        worksheet = workbook.active
+                        
+                    except Exception as e:
+                        log_message(f"❌ Error writing to Excel: {e}", 'error')
+                        log_message(f"❌ Excel file path (absolute): {abs_file_path}", 'error')
+                        log_message(f"❌ Row: {row_num}, Columns: C (3) and D (4)", 'error')
+                        traceback.print_exc()
+                        # Try to reopen workbook even if save failed
+                        try:
+                            workbook = load_workbook(abs_file_path)
+                            worksheet = workbook.active
+                        except:
+                            pass
                 
                 log_message(f"✅ Successfully processed: {user_email}", 'success')
                 
@@ -254,10 +412,69 @@ def run_bot_task(excel_file_path, captcha_api_key):
                     'error': str(e),
                     'timestamp': datetime.now().isoformat()
                 })
+                
+                # Write error result to Excel columns C and D
+                # C column: "失敗"
+                # D column: Error details
+                try:
+                    error_status = '失敗'
+                    error_msg = f'失敗: エラー - {str(e)[:100]}'
+                    abs_file_path = os.path.abspath(excel_file_path)
+                    log_message(f"📝 Writing error result to Excel row {row_num}, Column C: {error_status}, Column D: {error_msg}", 'info')
+                    log_message(f"📝 Excel file path (absolute): {abs_file_path}", 'info')
+                    
+                    try:
+                        workbook.close()
+                    except:
+                        pass
+                    
+                    workbook = load_workbook(abs_file_path)
+                    worksheet = workbook.active
+                    
+                    # Write to column C (status)
+                    status_cell = worksheet.cell(row=row_num, column=3)
+                    status_cell.value = error_status
+                    
+                    # Write to column D (details)
+                    result_cell = worksheet.cell(row=row_num, column=4)
+                    result_cell.value = error_msg
+                    
+                    workbook.save(abs_file_path)
+                    workbook.close()  # Explicitly close to ensure save
+                    log_message(f"✅ Wrote error result to Excel: Column C = '{error_status}', Column D = '{error_msg}'", 'info')
+                    log_message(f"✅ Saved to: {abs_file_path}", 'info')
+                    
+                    # Reopen for next iteration
+                    time.sleep(0.3)
+                    workbook = load_workbook(abs_file_path)
+                    worksheet = workbook.active
+                except Exception as save_error:
+                    log_message(f"⚠️ Could not save error result to Excel: {save_error}", 'warning')
+                    traceback.print_exc()
+                    # Try to reopen workbook
+                    try:
+                        abs_file_path = os.path.abspath(excel_file_path)
+                        workbook = load_workbook(abs_file_path)
+                        worksheet = workbook.active
+                    except:
+                        pass
+                
                 traceback.print_exc()
                 continue
         
-        workbook.close()
+        # Ensure workbook is closed to release file lock
+        try:
+            if 'workbook' in locals():
+                workbook.close()
+                log_message("📄 Workbook closed successfully", 'info')
+        except Exception as e:
+            log_message(f"⚠️ Error closing workbook: {e}", 'warning')
+        
+        # Final message with file location
+        final_file_path = os.path.abspath(excel_file_path)
+        log_message(f"📂 IMPORTANT: All results have been saved to: {final_file_path}", 'success')
+        log_message(f"📂 The file is in the 'uploads' folder - this is NOT your original uploaded file!", 'warning')
+        log_message(f"📂 Please download or check the file at: {final_file_path}", 'info')
         
         # Close driver gracefully
         try:
@@ -283,6 +500,22 @@ def run_bot_task(excel_file_path, captcha_api_key):
         })
         traceback.print_exc()
     finally:
+        # Ensure workbook is closed in finally block to release file lock
+        try:
+            if 'workbook' in locals():
+                workbook.close()
+                log_message("📄 Workbook closed in finally block", 'info')
+        except Exception as e:
+            log_message(f"⚠️ Error closing workbook in finally block: {e}", 'warning')
+        
+        # Ensure driver is closed
+        try:
+            if 'driver' in locals():
+                driver.quit()
+                log_message("🌐 Browser closed in finally block", 'info')
+        except Exception as e:
+            log_message(f"⚠️ Error closing browser in finally block: {e}", 'warning')
+        
         bot_status['running'] = False
         bot_status['current_step'] = 'Idle'
         socketio.emit('status_update', bot_status)
@@ -316,15 +549,60 @@ def start_bot():
     if not file.filename.endswith(('.xlsx', '.xls')):
         return jsonify({'success': False, 'message': 'Invalid file type. Please upload Excel file (.xlsx or .xls)'}), 400
     
-    # Save file
-    filename = secure_filename(file.filename)
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    file.save(filepath)
+    # Save file with unique filename if file already exists or is locked
+    try:
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        
+        # Check if file exists and if it's locked
+        if os.path.exists(filepath):
+            try:
+                # Try to open the file in append mode to check if it's locked
+                with open(filepath, 'ab'):
+                    pass
+                # File exists but not locked, generate unique name
+                base_name, ext = os.path.splitext(filename)
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+                filename = f"{base_name}_{timestamp}{ext}"
+                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            except (PermissionError, IOError):
+                # File is locked, generate unique name
+                base_name, ext = os.path.splitext(filename)
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+                filename = f"{base_name}_{timestamp}{ext}"
+                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        
+        # Save the file
+        file.save(filepath)
+        log_message(f"📄 File saved to: {filepath}", 'info')
+        
+    except PermissionError as e:
+        # If still locked, try with unique timestamp filename
+        base_name, ext = os.path.splitext(secure_filename(file.filename))
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+        filename = f"{base_name}_{timestamp}{ext}"
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+        log_message(f"⚠️ Original file was locked, saved with unique name: {filename}", 'warning')
+        log_message(f"📄 File saved to: {filepath}", 'info')
+    except Exception as e:
+        error_msg = f"Failed to save uploaded file: {str(e)}"
+        log_message(f"❌ {error_msg}", 'error')
+        return jsonify({'success': False, 'message': error_msg}), 500
     
-    # Get CAPTCHA API key from request or env
-    captcha_api_key = request.form.get('captcha_api_key') or os.getenv('CAPTCHA_API_KEY')
+    # CAPTCHA API key is loaded from environment variable in bot.py
+    # Check if CAPTCHA API key is set in environment
+    captcha_api_key = os.getenv('CAPTCHA_API_KEY')
     if not captcha_api_key:
-        return jsonify({'success': False, 'message': 'CAPTCHA API key is required'}), 400
+        return jsonify({'success': False, 'message': 'CAPTCHA API key is required. Please set CAPTCHA_API_KEY in .env file.'}), 400
+    
+    # Get lottery count from form (default: 1 if not provided)
+    try:
+        lottery_count = int(request.form.get('lottery_count', 1))
+        if lottery_count < 1 or lottery_count > 5:
+            return jsonify({'success': False, 'message': 'Lottery count must be between 1 and 5'}), 400
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'message': 'Invalid lottery count. Please enter a number between 1 and 5'}), 400
     
     # Reset status
     bot_status = {
@@ -337,8 +615,8 @@ def start_bot():
         'errors': []
     }
     
-    # Start bot in separate thread
-    bot_thread = threading.Thread(target=run_bot_task, args=(filepath, captcha_api_key))
+    # Start bot in separate thread (CAPTCHA API key is loaded from env in bot.py)
+    bot_thread = threading.Thread(target=run_bot_task, args=(filepath, lottery_count))
     bot_thread.daemon = True
     bot_thread.start()
     
