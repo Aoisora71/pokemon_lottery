@@ -104,7 +104,7 @@ def cleanup_old_logs(days_to_keep=30):
         print(f"Error cleaning up old logs: {e}")
 
 def log_message(message, level='info'):
-    """Add log message to queue and emit via WebSocket"""
+    """Add log message to queue and emit via WebSocket, and always print to terminal"""
     global _log_id_counter
     _log_id_counter += 1
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -121,6 +121,37 @@ def log_message(message, level='info'):
     
     # Write to log file
     write_log_to_file(log_entry)
+    
+    # Always print to terminal with detailed formatting
+    colors = {
+        'info': '\033[36m',      # Cyan
+        'success': '\033[32m',   # Green
+        'warning': '\033[33m',   # Yellow
+        'error': '\033[31m',     # Red
+    }
+    reset_color = '\033[0m'
+    bold = '\033[1m'
+    
+    # Check if terminal supports colors
+    use_colors = True
+    try:
+        if sys.platform == 'win32':
+            use_colors = sys.stdout.isatty()
+    except:
+        use_colors = False
+    
+    color = colors.get(level, colors['info']) if use_colors else ''
+    reset = reset_color if use_colors else ''
+    bold_prefix = bold if use_colors else ''
+    level_prefix = level.upper().ljust(8)
+    
+    if use_colors:
+        terminal_message = f"[{timestamp}] [{bold_prefix}{color}{level_prefix}{reset}] {message}"
+    else:
+        terminal_message = f"[{timestamp}] [{level_prefix}] {message}"
+    
+    # Print to terminal (stdout)
+    print(terminal_message, flush=True)
     
     # Put in queue for background thread to emit (removed direct emit to avoid duplicates)
     log_queue.put(log_entry)
@@ -153,8 +184,13 @@ def run_bot_task(excel_file_path, captcha_api_key):
         chrome_options = Options()
         chrome_options.add_argument('--start-maximized')
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
+        # Suppress Chrome warnings and errors
+        chrome_options.add_argument('--log-level=3')  # Only show fatal errors
+        chrome_options.add_argument('--disable-logging')
+        chrome_options.add_argument('--disable-gpu-logging')
+        chrome_options.add_argument('--disable-background-networking')  # Disable GCM/background services
+        chrome_options.add_experimental_option('excludeSwitches', ['enable-automation', 'enable-logging'])
         # Run in headless mode for server (comment out to see browser)
         # chrome_options.add_argument('--headless')
         
