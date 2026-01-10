@@ -113,17 +113,15 @@ def get_service():
         elif creds.expiry:
             # Calculate time until expiry (creds.expiry is typically timezone-aware UTC)
             # Handle both timezone-aware and naive datetime objects
-            now = datetime.utcnow()
+            from datetime import timezone
             expiry = creds.expiry
             
-            # If expiry is timezone-aware, make now timezone-aware too
+            # Use timezone-aware datetime (fixes deprecation warning)
             if expiry.tzinfo is not None:
-                try:
-                    from datetime import timezone
-                    now = datetime.now(timezone.utc)
-                except (ImportError, AttributeError):
-                    # Fallback: remove timezone from expiry for comparison
-                    expiry = expiry.replace(tzinfo=None)
+                now = datetime.now(timezone.utc)
+            else:
+                # If expiry is naive, convert to UTC for comparison
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
             
             time_until_expiry = (expiry - now).total_seconds()
             # Refresh if less than 5 minutes until expiry, or if it's been more than 6 days since last refresh
@@ -466,6 +464,13 @@ def get_message(service, msg_id, include_body=True):
     return subject, snippet, sender, to, date, categories, body_content
 
 if __name__ == '__main__':
+    # Fix Windows console encoding for UTF-8 characters
+    import sys
+    if sys.platform == 'win32':
+        import io
+        # Set UTF-8 encoding for stdout to handle Unicode characters in email subjects
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    
     service = get_service()
     
     # Display configuration

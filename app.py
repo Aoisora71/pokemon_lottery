@@ -26,12 +26,14 @@ except ImportError as e:
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'pokemon-lottery-bot-secret-key-2024'
 app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['LOG_FOLDER'] = 'logs'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
-# Create uploads directory if it doesn't exist
+# Create necessary directories if they don't exist
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs(app.config['LOG_FOLDER'], exist_ok=True)
 
 # Global state
 bot_status = {
@@ -46,11 +48,68 @@ bot_status = {
 
 bot_thread = None
 log_queue = queue.Queue()
+_log_id_counter = 0
+_log_file_lock = threading.Lock()
+_current_log_file = None
+
+def get_log_filename():
+    """Get the log filename for today"""
+    today = datetime.now().strftime('%Y-%m-%d')
+    return os.path.join(app.config['LOG_FOLDER'], f'bot_{today}.log')
+
+def write_log_to_file(log_entry):
+    """Write log entry to file in a thread-safe manner"""
+    global _current_log_file
+    
+    try:
+        log_filename = get_log_filename()
+        
+        # Check if we need to rotate (new day)
+        if _current_log_file != log_filename:
+            _current_log_file = log_filename
+        
+        # Format log entry for file
+        log_line = f"[{log_entry['timestamp']}] [{log_entry['level'].upper()}] {log_entry['message']}\n"
+        
+        # Thread-safe file writing
+        with _log_file_lock:
+            with open(log_filename, 'a', encoding='utf-8') as f:
+                f.write(log_line)
+                f.flush()  # Ensure immediate write
+        
+    except Exception as e:
+        # Don't break the application if file logging fails
+        print(f"Error writing to log file: {e}")
+
+def cleanup_old_logs(days_to_keep=30):
+    """Remove log files older than specified days"""
+    try:
+        log_folder = app.config['LOG_FOLDER']
+        if not os.path.exists(log_folder):
+            return
+        
+        current_time = time.time()
+        cutoff_time = current_time - (days_to_keep * 24 * 60 * 60)
+        
+        for filename in os.listdir(log_folder):
+            if filename.startswith('bot_') and filename.endswith('.log'):
+                filepath = os.path.join(log_folder, filename)
+                try:
+                    if os.path.getmtime(filepath) < cutoff_time:
+                        os.remove(filepath)
+                        print(f"Removed old log file: {filename}")
+                except Exception as e:
+                    print(f"Error removing log file {filename}: {e}")
+    except Exception as e:
+        print(f"Error cleaning up old logs: {e}")
 
 def log_message(message, level='info'):
     """Add log message to queue and emit via WebSocket"""
+    global _log_id_counter
+    _log_id_counter += 1
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     log_entry = {
+        'id': _log_id_counter,  # Unique ID for duplicate detection
         'timestamp': timestamp,
         'level': level,
         'message': message
@@ -59,8 +118,12 @@ def log_message(message, level='info'):
     # Keep only last 1000 logs
     if len(bot_status['logs']) > 1000:
         bot_status['logs'] = bot_status['logs'][-1000:]
+    
+    # Write to log file
+    write_log_to_file(log_entry)
+    
+    # Put in queue for background thread to emit (removed direct emit to avoid duplicates)
     log_queue.put(log_entry)
-    socketio.emit('log', log_entry)
 
 def run_bot_task(excel_file_path, captcha_api_key):
     """Run the bot in a separate thread"""
@@ -130,9 +193,20 @@ def run_bot_task(excel_file_path, captcha_api_key):
                 elif not bot.PASSWORD:
                     raise ValueError("PASSWORD is not set. Please include it in column B of the Excel file or set it in .env file.")
                 
+                # Set up logging callback for bot.py
+                bot.set_logger(log_message)
+                
+                # Set up stop check callback for bot.py
+                bot.set_stop_check(lambda: bot_status['running'])
+                
                 # Run lottery process
                 bot_status['current_step'] = f'Logging in as {user_email}'
-                lottery_begin(driver, wait)
+                log_message(f"🔐 Starting login process for {user_email}", 'info')
+                try:
+                    lottery_begin(driver, wait)
+                except StopIteration:
+                    log_message("⏹️ Login process stopped by user", 'warning')
+                    break
                 
                 log_message(f"✅ Successfully processed: {user_email}", 'success')
                 
@@ -148,11 +222,20 @@ def run_bot_task(excel_file_path, captcha_api_key):
                 continue
         
         workbook.close()
-        driver.quit()
+        
+        # Close driver gracefully
+        try:
+            driver.quit()
+            log_message("🌐 Browser closed", 'info')
+        except Exception as e:
+            log_message(f"⚠️ Error closing browser: {e}", 'warning')
         
         if bot_status['running']:
             log_message("🎉 All emails processed successfully!", 'success')
             bot_status['current_step'] = 'Completed'
+        else:
+            log_message("⏹️ Bot stopped by user", 'warning')
+            bot_status['current_step'] = 'Stopped'
         
     except Exception as e:
         error_msg = f"❌ Fatal error: {str(e)}"
@@ -247,9 +330,50 @@ def get_logs():
 
 @app.route('/api/clear-logs', methods=['POST'])
 def clear_logs():
-    """Clear logs"""
+    """Clear logs from memory (does not delete log files)"""
     bot_status['logs'] = []
     return jsonify({'success': True})
+
+@app.route('/api/logs/download', methods=['GET'])
+def download_logs():
+    """Download today's log file"""
+    try:
+        log_filename = get_log_filename()
+        if os.path.exists(log_filename):
+            return send_from_directory(
+                app.config['LOG_FOLDER'],
+                os.path.basename(log_filename),
+                as_attachment=True,
+                download_name=f'bot_log_{datetime.now().strftime("%Y-%m-%d")}.log'
+            )
+        else:
+            return jsonify({'success': False, 'message': 'Log file not found'}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/api/logs/list', methods=['GET'])
+def list_log_files():
+    """List available log files"""
+    try:
+        log_folder = app.config['LOG_FOLDER']
+        if not os.path.exists(log_folder):
+            return jsonify({'success': True, 'files': []})
+        
+        log_files = []
+        for filename in sorted(os.listdir(log_folder), reverse=True):
+            if filename.startswith('bot_') and filename.endswith('.log'):
+                filepath = os.path.join(log_folder, filename)
+                file_size = os.path.getsize(filepath)
+                file_mtime = datetime.fromtimestamp(os.path.getmtime(filepath)).isoformat()
+                log_files.append({
+                    'filename': filename,
+                    'size': file_size,
+                    'modified': file_mtime
+                })
+        
+        return jsonify({'success': True, 'files': log_files})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 # WebSocket events
 @socketio.on('connect')
@@ -266,11 +390,17 @@ def handle_disconnect():
 # Background task to emit logs
 def emit_logs():
     """Emit logs from queue via WebSocket"""
+    last_status_update = 0
     while True:
         try:
             log_entry = log_queue.get(timeout=1)
             socketio.emit('log', log_entry)
-            socketio.emit('status_update', bot_status)
+            # Only emit status update every 2 seconds to avoid excessive updates
+            import time
+            current_time = time.time()
+            if current_time - last_status_update >= 2:
+                socketio.emit('status_update', bot_status)
+                last_status_update = current_time
         except queue.Empty:
             continue
         except Exception as e:

@@ -185,7 +185,27 @@ function updateUI() {
     }
 }
 
+// Track seen logs to prevent duplicates
+const seenLogIds = new Set();
+
 function addLog(logEntry) {
+    // Use unique ID if available, otherwise fall back to timestamp + message
+    const logKey = logEntry.id ? `id-${logEntry.id}` : `${logEntry.timestamp}-${logEntry.message}`;
+    
+    // Skip if we've already seen this log
+    if (seenLogIds.has(logKey)) {
+        return;
+    }
+    
+    // Mark as seen
+    seenLogIds.add(logKey);
+    
+    // Keep only last 1000 seen log IDs to prevent memory issues
+    if (seenLogIds.size > 1000) {
+        const firstKey = seenLogIds.values().next().value;
+        seenLogIds.delete(firstKey);
+    }
+    
     // Remove empty state if exists
     const emptyState = logsContainer.querySelector('.log-empty');
     if (emptyState) {
