@@ -670,17 +670,27 @@ def lottery_begin(driver, wait=None):
         if "apply.html" not in driver.current_url:
             log(f"🌐 Navigating to application page: {APPLY_URL}", 'info')
             driver.get(APPLY_URL)
+            # Wait for page to fully load
             for _ in range(5):
                 check_stop()
                 time.sleep(1)
         else:
             log("✅ Already on application page", 'success')
+            # Wait a moment for page to stabilize if already on apply page
+            check_stop()
+            time.sleep(2)
+        
+        # Wait for page to be fully ready and check for any initial pop04 (normal information modal after successful login)
+        log("⏳ Waiting for apply page to fully load and checking for pop04 modal...", 'info')
+        check_stop()
+        time.sleep(3)  # Give page time to load and show any pop04
         
         pop04_reloaded = False  # Flag to track if page was reloaded due to exception
-        max_reload_attempts = 6  # Maximum number of reload attempts
+        max_reload_attempts = 5  # Maximum number of reload attempts (changed from 6 to 5)
         reload_attempt = 0
         
-        # Check for pop04 with exception message and reload up to 6 times
+        # Check for pop04 with exception message "意図しない例外が発生しました。" and reload up to 5 times
+        # If pop04 appears without exception message (normal case after successful login), just close it
         while reload_attempt < max_reload_attempts:
             check_stop()
             reload_attempt += 1
@@ -863,72 +873,127 @@ def lottery_begin(driver, wait=None):
                                         pass
                                     break  # Exit reload loop
                         else:
-                            # Normal pop04 handling (not exception case)
-                            log("ℹ️ Pop04 detected but no exception message. Handling normally...", 'info')
+                            # Normal pop04 handling (not exception case) - this is expected after successful OTP login
+                            log("ℹ️ Pop04 detected but no exception message. This is normal after successful login. Closing pop04...", 'info')
                             try:
-                                pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
-                                pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)))
-                                driver.execute_script("arguments[0].click();", pop04_link)
-                                log("✅ Popup link clicked", 'success')
+                                # Wait a moment for pop04 to be fully ready
                                 time.sleep(1)
+                                pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
+                                # Try multiple methods to close pop04
+                                pop04_closed = False
+                                
+                                # Method 1: Try to find and click the link element
+                                try:
+                                    pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)), timeout=5)
+                                    driver.execute_script("arguments[0].click();", pop04_link)
+                                    log("✅ Pop04 closed via link click", 'success')
+                                    pop04_closed = True
+                                    time.sleep(1)
+                                except Exception as e1:
+                                    log(f"⚠️ Could not close pop04 via link: {e1}. Trying alternative methods...", 'warning')
+                                    # Method 2: Try to find and click any close button or link in pop04
+                                    try:
+                                        close_buttons = driver.find_elements(By.XPATH, '//*[@id="pop04"]//a | //*[@id="pop04"]//button')
+                                        for btn in close_buttons:
+                                            if btn.is_displayed() and btn.is_enabled():
+                                                driver.execute_script("arguments[0].click();", btn)
+                                                log("✅ Pop04 closed via alternative button", 'success')
+                                                pop04_closed = True
+                                                time.sleep(1)
+                                                break
+                                    except Exception as e2:
+                                        log(f"⚠️ Could not close pop04 via alternative buttons: {e2}", 'warning')
+                                
+                                if pop04_closed:
+                                    # Verify pop04 is closed
+                                    time.sleep(1)
+                                    try:
+                                        pop04_verify = driver.find_elements(By.ID, "pop04")
+                                        if not pop04_verify or not pop04_verify[0].is_displayed():
+                                            log("✅ Pop04 successfully closed and verified", 'success')
+                                        else:
+                                            log("⚠️ Pop04 still appears to be open after close attempt. Proceeding anyway...", 'warning')
+                                    except:
+                                        log("✅ Pop04 close verification completed", 'success')
+                                else:
+                                    log("⚠️ Could not close pop04 using any method. It may close automatically or may not affect functionality. Proceeding...", 'warning')
+                                
                             except Exception as e:
-                                log(f"⚠️ Could not click pop04 link: {e}", 'warning')
-                            break  # Exit reload loop - not exception case
+                                log(f"⚠️ Error handling normal pop04: {e}. Proceeding as it's not an error case...", 'warning')
+                            break  # Exit reload loop - not exception case, normal pop04 handled
                     except Exception as e:
-                        log(f"⚠️ Could not read pop04 message (Attempt {reload_attempt}): {e}. Trying to close pop04...", 'warning')
+                        log(f"⚠️ Could not read pop04 message (Attempt {reload_attempt}): {e}. Treating as normal pop04 and closing...", 'warning')
                         try:
-                            pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
-                            pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)))
-                            driver.execute_script("arguments[0].click();", pop04_link)
-                            log("✅ Popup link clicked (fallback)", 'success')
+                            # Try to close pop04 as normal modal (not exception case)
                             time.sleep(1)
-                        except:
-                            pass
-                        break  # Exit reload loop
+                            pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
+                            pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)), timeout=5)
+                            driver.execute_script("arguments[0].click();", pop04_link)
+                            log("✅ Pop04 closed (fallback method)", 'success')
+                            time.sleep(1)
+                        except Exception as e2:
+                            log(f"⚠️ Could not close pop04 (fallback): {e2}. It may close automatically. Proceeding...", 'warning')
+                        break  # Exit reload loop - treat as normal case
                 else:
-                    # pop04 not displayed, exit loop
-                    log(f"ℹ️ Pop04 not displayed (Attempt {reload_attempt}). Continuing normally...", 'info')
+                    # pop04 not displayed, exit loop - this is normal after successful login
+                    log(f"ℹ️ Pop04 not displayed (Attempt {reload_attempt}). This is normal. Ready for lottery processing.", 'info')
                     break
             except Exception as e:
-                # pop04 not found or error, exit loop
-                log(f"ℹ️ Pop04 not present or error checking (Attempt {reload_attempt}): {e}. Continuing normally...", 'info')
-                break  # Exit reload loop
+                # pop04 not found or error checking - this is normal if pop04 doesn't appear
+                log(f"ℹ️ Pop04 not present or error checking (Attempt {reload_attempt}): {e}. This is normal. Ready for lottery processing.", 'info')
+                break  # Exit reload loop - treat as normal case
         
-        # If page was reloaded due to exception, verify pop04 is cleared and proceed
+        # Final verification: ensure pop04 is cleared before proceeding to lottery processing
+        check_stop()
+        log("🔍 Final check: Verifying pop04 is cleared before starting lottery processing...", 'info')
+        try:
+            # Wait a moment for any pop04 animations to complete
+            time.sleep(2)
+            pop04_final_check = driver.find_elements(By.ID, "pop04")
+            if pop04_final_check and pop04_final_check[0].is_displayed():
+                log("⚠️ Pop04 still present before lottery processing. Attempting final close...", 'warning')
+                try:
+                    # Try multiple methods to close pop04
+                    pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
+                    pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)), timeout=5)
+                    driver.execute_script("arguments[0].click();", pop04_link)
+                    log("✅ Pop04 closed in final check", 'success')
+                    time.sleep(2)  # Wait for pop04 to fully close
+                    
+                    # Verify pop04 is closed
+                    pop04_verify_check = driver.find_elements(By.ID, "pop04")
+                    if not pop04_verify_check or not pop04_verify_check[0].is_displayed():
+                        log("✅ Pop04 successfully closed and verified in final check", 'success')
+                    else:
+                        log("⚠️ Pop04 may still be open, but proceeding with lottery processing...", 'warning')
+                except Exception as e:
+                    log(f"⚠️ Could not close pop04 in final check: {e}. Proceeding with lottery processing anyway...", 'warning')
+            else:
+                log("✅ Pop04 is not present (or already closed). Ready for lottery processing.", 'success')
+        except Exception as e:
+            log(f"⚠️ Error in final pop04 check: {e}. Proceeding with lottery processing...", 'warning')
+        
+        # If page was reloaded due to exception, wait for page to stabilize
         if pop04_reloaded:
             check_stop()
-            log(f"✅ Page reload completed. Total reload attempts: {reload_attempt}", 'success')
-            
-            # Final check to ensure pop04 is cleared
-            try:
-                pop04_final_check = driver.find_elements(By.ID, "pop04")
-                if pop04_final_check and pop04_final_check[0].is_displayed():
-                    log("⚠️ Pop04 still present after all reload attempts. Attempting to close...", 'warning')
-                    try:
-                        pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
-                        pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)))
-                        driver.execute_script("arguments[0].click();", pop04_link)
-                        log("✅ Pop04 closed after all reload attempts", 'success')
-                        time.sleep(1)
-                    except:
-                        log("⚠️ Could not close pop04 after all reload attempts. Proceeding anyway...", 'warning')
-                else:
-                    log("✅ Pop04 cleared successfully after reload", 'success')
-            except:
-                log("✅ No pop04 detected after reload. Proceeding with lottery entry...", 'success')
-            
-            # After reload, wait for page to stabilize and process all available lotteries
-            log("✅ Page reloaded successfully. Waiting for page to stabilize...", 'success')
-            check_stop()
+            log(f"✅ Page reload completed due to exception. Total reload attempts: {reload_attempt}. Waiting for page to stabilize...", 'success')
             time.sleep(3)  # Wait for page to fully load after reload
-            
-            # Process all available lotteries sequentially
-            log(f"🔄 Processing up to {_max_lotteries} lotteries sequentially after reload...", 'info')
-            lottery_result = _process_all_lotteries(driver, wait, max_lotteries=_max_lotteries)
-            log("🎉 All lottery entry processes completed!", 'success')
-            return lottery_result
         
-        # Normal flow (no reload): Process all available lotteries sequentially
+        # Ensure we're on the apply page before starting lottery processing
+        check_stop()
+        if "apply.html" not in driver.current_url:
+            log(f"⚠️ Not on apply page before lottery processing. Navigating to apply page...", 'warning')
+            try:
+                driver.get(APPLY_URL)
+                log(f"✅ Navigated to apply page", 'success')
+                # Wait for page to load
+                for _ in range(5):
+                    check_stop()
+                    time.sleep(1)
+            except Exception as e:
+                log(f"⚠️ Could not navigate to apply page: {e}. Continuing anyway...", 'warning')
+        
+        # Normal flow: Process all available lotteries sequentially
         log(f"🎰 Starting lottery entry process for up to {_max_lotteries} lotteries...", 'info')
         check_stop()
         
@@ -1011,6 +1076,70 @@ def _check_lottery_status(driver, wait, lottery_number):
         log(f"⚠️ Could not check status for lottery #{lottery_number}: {e}", 'warning')
         return (None, False)
 
+def _check_and_solve_captcha_on_apply_page(driver, wait):
+    """
+    Check for CAPTCHA on the apply.html page and solve it if present.
+    Returns True if CAPTCHA was found and solved, False otherwise.
+    """
+    try:
+        check_stop()
+        log("🔍 Checking for CAPTCHA on apply page...", 'info')
+        
+        # Check if we're on apply page
+        if "apply.html" not in driver.current_url:
+            log("ℹ️ Not on apply page, skipping CAPTCHA check", 'info')
+            return False
+        
+        # Look for reCAPTCHA in the page source
+        page_source = driver.page_source
+        match = re.search(r'6Le[a-zA-Z0-9_-]+', page_source)
+        
+        if match:
+            site_key = match.group(0)
+            log(f"🔑 Found reCAPTCHA on apply page. Site key: {site_key[:30]}...", 'info')
+            
+            try:
+                # Solve CAPTCHA using 2captcha API
+                check_stop()
+                captcha_solution = solve_recaptcha(site_key, driver.current_url)
+                
+                log("💉 Injecting CAPTCHA solution into apply page...", 'info')
+                # Inject CAPTCHA solution into the page
+                driver.execute_script(f'''
+                    var callback = function(token) {{
+                        var textareas = document.getElementsByName("g-recaptcha-response");
+                        for (var i = 0; i < textareas.length; i++) {{
+                            textareas[i].value = token;
+                        }}
+                    }};
+                    callback("{captcha_solution}");
+                    
+                    if (typeof ___grecaptcha_cfg !== 'undefined') {{
+                        Object.keys(___grecaptcha_cfg.clients).forEach(function(key) {{
+                            var client = ___grecaptcha_cfg.clients[key];
+                            if (client && client.callback) {{
+                                client.callback("{captcha_solution}");
+                            }}
+                        }});
+                    }}
+                ''')
+                log("✅ CAPTCHA solution injected into apply page", 'success')
+                time.sleep(2)  # Wait for CAPTCHA to be processed
+                check_stop()
+                return True
+            except StopIteration:
+                log("⏹️ CAPTCHA solving stopped by user", 'warning')
+                raise
+            except Exception as e:
+                log(f"❌ Error solving CAPTCHA on apply page: {e}", 'error')
+                return False
+        else:
+            log("ℹ️ No CAPTCHA found on apply page", 'info')
+            return False
+    except Exception as e:
+        log(f"⚠️ Error checking for CAPTCHA on apply page: {e}", 'warning')
+        return False
+
 def _process_all_lotteries(driver, wait, max_lotteries=1):
     """
     Process all available lotteries sequentially.
@@ -1036,6 +1165,13 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
     lottery_results = []  # Track results for each lottery
     
     log(f"🔍 Starting to check up to {max_lotteries} lotteries for processing...", 'info')
+    
+    # Check for CAPTCHA on apply page before starting lottery processing
+    check_stop()
+    captcha_solved = _check_and_solve_captcha_on_apply_page(driver, wait)
+    if captcha_solved:
+        log("✅ CAPTCHA solved before starting lottery processing", 'success')
+        time.sleep(2)  # Wait for page to stabilize after CAPTCHA solution
     
     # Ensure we're on the apply page at the start
     check_stop()
@@ -1132,23 +1268,20 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                     })
                     processed_count += 1
                     
-                    # If there are more lotteries to check, reload the page to ensure stable state
-                    if checked_count < max_lotteries:
-                        log(f"🔄 Reloading apply page to prepare for next lottery check...", 'info')
-                        check_stop()
-                        try:
-                            driver.get(APPLY_URL)
-                            log(f"✅ Page reloaded successfully", 'success')
-                            # Wait for page to stabilize after reload
-                            for _ in range(5):
-                                check_stop()
-                                time.sleep(1)
-                        except Exception as e:
-                            log(f"⚠️ Could not reload page: {e}. Continuing anyway...", 'warning')
+                    # Check for pop04 exception message after successful lottery processing
+                    check_stop()
+                    pop04_reload_needed = _check_and_handle_pop04_exception(driver, wait)
+                    
+                    if pop04_reload_needed:
+                        # Page was reloaded due to exception, wait for it to stabilize
+                        log("⏳ Waiting for page to stabilize after reload...", 'info')
+                        for _ in range(3):
+                            check_stop()
+                            time.sleep(1)
                     else:
-                        # Wait a bit before finishing
+                        # No reload needed, just brief wait before next lottery
                         check_stop()
-                        time.sleep(2)
+                        time.sleep(1)
                 else:
                     log(f"⚠️ Lottery #{lottery_number} processing failed. Continuing to next lottery...", 'warning')
                     lottery_results.append({
@@ -1157,18 +1290,29 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                         'reason': f'抽選{lottery_number}の処理が失敗しました'
                     })
                     failed_count += 1
-                    # If there are more lotteries to check, ensure we're on the apply page
-                    if checked_count < max_lotteries:
-                        check_stop()
-                        try:
-                            if "apply.html" not in driver.current_url:
-                                log(f"🔄 Navigating back to apply page for next lottery check...", 'info')
-                                driver.get(APPLY_URL)
-                                for _ in range(3):
-                                    check_stop()
-                                    time.sleep(1)
-                        except Exception as e:
-                            log(f"⚠️ Could not navigate to apply page: {e}. Continuing anyway...", 'warning')
+                    # Check for pop04 exception message after failed lottery processing
+                    check_stop()
+                    pop04_reload_needed = _check_and_handle_pop04_exception(driver, wait)
+                    
+                    if pop04_reload_needed:
+                        # Page was reloaded due to exception, wait for it to stabilize
+                        log("⏳ Waiting for page to stabilize after reload...", 'info')
+                        for _ in range(3):
+                            check_stop()
+                            time.sleep(1)
+                    else:
+                        # No reload needed, check if we need to navigate back to apply page
+                        if checked_count < max_lotteries:
+                            check_stop()
+                            try:
+                                if "apply.html" not in driver.current_url:
+                                    log(f"🔄 Navigating back to apply page for next lottery check...", 'info')
+                                    driver.get(APPLY_URL)
+                                    for _ in range(3):
+                                        check_stop()
+                                        time.sleep(1)
+                            except Exception as e:
+                                log(f"⚠️ Could not navigate to apply page: {e}. Continuing anyway...", 'warning')
             except StopIteration:
                 log(f"⏹️ Lottery processing stopped by user at lottery #{lottery_number}", 'warning')
                 lottery_results.append({
@@ -1185,18 +1329,29 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                     'reason': f'抽選{lottery_number}の処理でエラーが発生しました: {str(e)[:100]}'
                 })
                 failed_count += 1
-                # If there are more lotteries to check, ensure we're on the apply page
-                if checked_count < max_lotteries:
-                    check_stop()
-                    try:
-                        if "apply.html" not in driver.current_url:
-                            log(f"🔄 Navigating back to apply page after error for next lottery check...", 'info')
-                            driver.get(APPLY_URL)
-                            for _ in range(3):
-                                check_stop()
-                                time.sleep(1)
-                    except Exception as e2:
-                        log(f"⚠️ Could not navigate to apply page after error: {e2}. Continuing anyway...", 'warning')
+                # Check for pop04 exception message after error
+                check_stop()
+                pop04_reload_needed = _check_and_handle_pop04_exception(driver, wait)
+                
+                if pop04_reload_needed:
+                    # Page was reloaded due to exception, wait for it to stabilize
+                    log("⏳ Waiting for page to stabilize after reload...", 'info')
+                    for _ in range(3):
+                        check_stop()
+                        time.sleep(1)
+                else:
+                    # No reload needed, check if we need to navigate back to apply page
+                    if checked_count < max_lotteries:
+                        check_stop()
+                        try:
+                            if "apply.html" not in driver.current_url:
+                                log(f"🔄 Navigating back to apply page after error for next lottery check...", 'info')
+                                driver.get(APPLY_URL)
+                                for _ in range(3):
+                                    check_stop()
+                                    time.sleep(1)
+                        except Exception as e2:
+                            log(f"⚠️ Could not navigate to apply page after error: {e2}. Continuing anyway...", 'warning')
                 # Continue to next lottery instead of stopping
         else:
             log(f"⚠️ Lottery #{lottery_number} has unexpected status: '{status_text}'. Skipping...", 'warning')
@@ -1300,11 +1455,195 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
         'message': final_message
     }
 
+def _check_and_handle_pop04_exception(driver, wait, max_reload_attempts=5):
+    """
+    Check for pop04 with exception message "意図しない例外が発生しました。" and reload if found.
+    Returns True if page was reloaded, False otherwise.
+    """
+    try:
+        check_stop()
+        pop04_elements = driver.find_elements(By.ID, "pop04")
+        if pop04_elements and pop04_elements[0].is_displayed():
+            pop04_element = pop04_elements[0]
+            log("🔔 Popup (pop04) detected during lottery processing, checking content...", 'info')
+            
+            # Check if pop04 contains "意図しない例外が発生しました。" message
+            pop04_message_xpath = '//*[@id="pop04"]/div/div[1]/p'
+            try:
+                pop04_message_element = driver.find_element(By.XPATH, pop04_message_xpath)
+                pop04_message_text = pop04_message_element.text.strip()
+                log(f"📋 Pop04 message: {pop04_message_text}", 'info')
+                
+                if "意図しない例外が発生しました。" in pop04_message_text:
+                    log(f"⚠️ Exception message detected in pop04: '意図しない例外が発生しました。' - Reloading page...", 'warning')
+                    
+                    # Reload the page when exception message is detected (up to max_reload_attempts times)
+                    reload_attempt = 0
+                    while reload_attempt < max_reload_attempts:
+                        check_stop()
+                        reload_attempt += 1
+                        log(f"🔄 Reload attempt {reload_attempt}/{max_reload_attempts}...", 'info')
+                        
+                        reload_success = False
+                        current_url_before = driver.current_url
+                        log(f"📍 Current URL before reload: {current_url_before}", 'info')
+                        
+                        # Try multiple reload methods
+                        try:
+                            # Method 1: driver.refresh()
+                            driver.refresh()
+                            check_stop()
+                            for _ in range(5):
+                                check_stop()
+                                time.sleep(1)
+                            log(f"✅ Page reloaded via refresh() (Attempt {reload_attempt})", 'success')
+                            reload_success = True
+                        except Exception as e:
+                            log(f"⚠️ Could not reload via refresh(): {e}. Trying driver.get()...", 'warning')
+                            try:
+                                # Method 2: driver.get()
+                                current_url = driver.current_url or APPLY_URL
+                                driver.get(current_url)
+                                check_stop()
+                                for _ in range(5):
+                                    check_stop()
+                                    time.sleep(1)
+                                log(f"✅ Page reloaded via get() (Attempt {reload_attempt})", 'success')
+                                reload_success = True
+                            except Exception as e2:
+                                log(f"⚠️ Could not reload via get(): {e2}. Trying JavaScript...", 'warning')
+                                try:
+                                    # Method 3: JavaScript location.reload()
+                                    driver.execute_script("window.location.reload(true);")
+                                    check_stop()
+                                    for _ in range(5):
+                                        check_stop()
+                                        time.sleep(1)
+                                    log(f"✅ Page reloaded via JavaScript (Attempt {reload_attempt})", 'success')
+                                    reload_success = True
+                                except Exception as e3:
+                                    log(f"❌ All reload methods failed (Attempt {reload_attempt}): {e3}", 'error')
+                                    reload_success = False
+                        
+                        if reload_success:
+                            # Wait for page to stabilize
+                            log(f"⏳ Waiting for page to stabilize after reload {reload_attempt}...", 'info')
+                            time.sleep(3)
+                            
+                            # Check if pop04 still exists with exception message
+                            check_stop()
+                            try:
+                                pop04_check = driver.find_elements(By.ID, "pop04")
+                                if pop04_check and pop04_check[0].is_displayed():
+                                    try:
+                                        pop04_message_check = driver.find_element(By.XPATH, pop04_message_xpath)
+                                        pop04_message_text_check = pop04_message_check.text.strip()
+                                        if "意図しない例外が発生しました。" in pop04_message_text_check:
+                                            if reload_attempt < max_reload_attempts:
+                                                log(f"⚠️ Exception message still present after reload {reload_attempt}. Retrying...", 'warning')
+                                                continue  # Retry reload
+                                            else:
+                                                log(f"❌ Exception message still present after {max_reload_attempts} reload attempts. Closing pop04...", 'error')
+                                                # Try to close pop04
+                                                try:
+                                                    pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
+                                                    pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)))
+                                                    driver.execute_script("arguments[0].click();", pop04_link)
+                                                    log("✅ Pop04 closed after max reload attempts", 'success')
+                                                    time.sleep(1)
+                                                except:
+                                                    pass
+                                                return True  # Page was reloaded
+                                        else:
+                                            log("✅ Exception message cleared after reload. Closing pop04...", 'success')
+                                            # Close pop04 normally
+                                            try:
+                                                pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
+                                                pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)))
+                                                driver.execute_script("arguments[0].click();", pop04_link)
+                                                log("✅ Pop04 closed", 'success')
+                                                time.sleep(1)
+                                            except:
+                                                pass
+                                            return True  # Page was reloaded
+                                    except:
+                                        log("✅ Pop04 message check completed. Closing pop04...", 'success')
+                                        # Try to close pop04
+                                        try:
+                                            pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
+                                            pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)))
+                                            driver.execute_script("arguments[0].click();", pop04_link)
+                                            log("✅ Pop04 closed", 'success')
+                                            time.sleep(1)
+                                        except:
+                                            pass
+                                        return True  # Page was reloaded
+                                else:
+                                    log(f"✅ Pop04 cleared after reload {reload_attempt}", 'success')
+                                    return True  # Page was reloaded
+                            except Exception as e:
+                                log(f"⚠️ Error checking pop04 after reload: {e}. Assuming cleared.", 'warning')
+                                return True  # Page was reloaded
+                        else:
+                            # Reload failed
+                            if reload_attempt < max_reload_attempts:
+                                log(f"⚠️ Reload attempt {reload_attempt} failed. Will retry...", 'warning')
+                                time.sleep(2)
+                                continue
+                            else:
+                                log(f"❌ All {max_reload_attempts} reload attempts failed. Closing pop04...", 'error')
+                                # Try to close pop04
+                                try:
+                                    pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
+                                    pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)))
+                                    driver.execute_script("arguments[0].click();", pop04_link)
+                                    log("✅ Pop04 closed after all reload attempts failed", 'success')
+                                    time.sleep(1)
+                                except:
+                                    pass
+                                return False  # Page reload failed, but tried
+                else:
+                    # Pop04 exists but no exception message - close it normally
+                    log("ℹ️ Pop04 detected but no exception message. Closing normally...", 'info')
+                    try:
+                        pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
+                        pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)))
+                        driver.execute_script("arguments[0].click();", pop04_link)
+                        log("✅ Pop04 closed", 'success')
+                        time.sleep(1)
+                    except Exception as e:
+                        log(f"⚠️ Could not close pop04: {e}", 'warning')
+                    return False  # No reload needed
+            except Exception as e:
+                log(f"⚠️ Could not read pop04 message: {e}. Trying to close pop04...", 'warning')
+                try:
+                    pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
+                    pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)))
+                    driver.execute_script("arguments[0].click();", pop04_link)
+                    log("✅ Pop04 closed (fallback)", 'success')
+                    time.sleep(1)
+                except:
+                    pass
+                return False  # No reload needed
+        else:
+            # No pop04 detected
+            return False  # No reload needed
+    except Exception as e:
+        log(f"⚠️ Error checking pop04: {e}. Assuming no action needed.", 'warning')
+        return False  # No reload needed
+
 def _process_lottery_entry(driver, wait, lottery_number=1):
     """Process lottery entry for a specific lottery number. Returns True on success, False on failure."""
     try:
         check_stop()
         log(f"🎰 Processing lottery #{lottery_number}...", 'info')
+        
+        # Check for CAPTCHA on apply page before processing lottery entry
+        check_stop()
+        captcha_solved = _check_and_solve_captcha_on_apply_page(driver, wait)
+        if captcha_solved:
+            log(f"✅ CAPTCHA solved before processing lottery #{lottery_number}", 'success')
+            time.sleep(1)  # Brief wait after CAPTCHA solution
         
         # Step 2: Click on dt element to expand details
         check_stop()
@@ -1453,7 +1792,15 @@ def _process_lottery_entry(driver, wait, lottery_number=1):
         check_stop()
         time.sleep(1)
         
-        # Step 5: Click submit button to open modal
+        # Step 5: Check for CAPTCHA before submitting application
+        check_stop()
+        log(f"🔍 Checking for CAPTCHA before submitting lottery #{lottery_number}...", 'info')
+        captcha_solved_before_submit = _check_and_solve_captcha_on_apply_page(driver, wait)
+        if captcha_solved_before_submit:
+            log(f"✅ CAPTCHA solved before submitting lottery #{lottery_number}", 'success')
+            time.sleep(1)  # Brief wait after CAPTCHA solution
+        
+        # Step 6: Click submit button to open modal
         check_stop()
         log(f"🔔 Clicking submit button for lottery #{lottery_number} to open modal...", 'info')
         submit_xpath = f'//*[@id="main"]/div[1]/ul/li[{lottery_number}]/div[2]/dl/dd/div[3]/form/ul[2]/li/a'
@@ -1462,7 +1809,7 @@ def _process_lottery_entry(driver, wait, lottery_number=1):
         check_stop()
         time.sleep(2)  # Wait for modal to appear
         
-        # Step 6: Wait for modal to appear and click apply button
+        # Step 7: Wait for modal to appear and click apply button
         check_stop()
         log(f"🎯 Waiting for modal (pop01) to appear for lottery #{lottery_number}...", 'info')
         modal_xpath = '//*[@id="pop01"]/div/div[1]'
@@ -1521,21 +1868,34 @@ def _process_lottery_entry(driver, wait, lottery_number=1):
                             log(f"✅ Modal closed via ESC key", 'success')
                         time.sleep(1)
                     except Exception as e:
-                        log(f"⚠️ Could not close modal: {e}. Trying to reload page...", 'warning')
-                        # If modal can't be closed, reload the page
-                        try:
-                            driver.get(APPLY_URL)
-                            log(f"✅ Page reloaded to clear modal", 'success')
-                            for _ in range(3):
-                                check_stop()
-                                time.sleep(1)
-                        except Exception as e2:
-                            log(f"⚠️ Could not reload page: {e2}. Continuing anyway...", 'warning')
+                        log(f"⚠️ Could not close modal: {e}. Checking for pop04 exception message...", 'warning')
+                        # Check for pop04 exception message instead of automatically reloading
+                        check_stop()
+                        pop04_reload_needed = _check_and_handle_pop04_exception(driver, wait, max_reload_attempts=5)
+                        if not pop04_reload_needed:
+                            # If no pop04 exception, try to navigate back to apply page only if not already there
+                            try:
+                                if "apply.html" not in driver.current_url:
+                                    driver.get(APPLY_URL)
+                                    log(f"✅ Navigated back to apply page to clear modal", 'success')
+                                    for _ in range(3):
+                                        check_stop()
+                                        time.sleep(1)
+                            except Exception as e2:
+                                log(f"⚠️ Could not navigate to apply page: {e2}. Continuing anyway...", 'warning')
             except Exception as e:
                 # Modal might have auto-closed or doesn't exist
                 log(f"ℹ️ Modal check completed (might be auto-closed): {e}", 'info')
         
         log(f"🎉 Lottery #{lottery_number} entry process completed successfully!", 'success')
+        
+        # Check for pop04 exception message "意図しない例外が発生しました。" after lottery processing
+        check_stop()
+        log("🔍 Checking for pop04 exception message after lottery processing...", 'info')
+        pop04_reload_needed = _check_and_handle_pop04_exception(driver, wait, max_reload_attempts=5)
+        if pop04_reload_needed:
+            log("✅ Pop04 exception handled and page reloaded", 'success')
+        
         return True  # Return True on success
         
     except StopIteration:
