@@ -1221,6 +1221,8 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
     - Processes only lotteries with status "受付中" (currently open)
     - Continues checking even if a lottery doesn't exist (up to max_lotteries)
     - Continues to next lottery even if one fails
+    - If reload occurs, restarts from first lottery
+    - After completing all lotteries, verifies all are completed by checking from first lottery again
     
     Returns:
         dict: {
@@ -1229,39 +1231,47 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
             'message': str  # Detailed message for Excel column D
         }
     """
-    lottery_number = 1
-    processed_count = 0
-    skipped_count = 0
-    failed_count = 0
-    checked_count = 0  # Number of lotteries checked (including non-existent ones)
-    lottery_results = []  # Track results for each lottery
+    max_verification_attempts = 3  # Maximum number of verification attempts after completion
+    verification_attempt = 0
     
-    log(f"🔍 Starting to check up to {max_lotteries} lotteries for processing...", 'info')
-    
-    # Check for CAPTCHA on apply page before starting lottery processing
-    check_stop()
-    captcha_solved = _check_and_solve_captcha_on_apply_page(driver, wait)
-    if captcha_solved:
-        log("✅ CAPTCHA solved before starting lottery processing", 'success')
-        time.sleep(2)  # Wait for page to stabilize after CAPTCHA solution
-    
-    # Ensure we're on the apply page at the start
-    check_stop()
-    if "apply.html" not in driver.current_url:
-        log(f"⚠️ Not on apply page at start. Navigating to apply page...", 'warning')
-        try:
-            driver.get(APPLY_URL)
-            log(f"✅ Navigated to apply page", 'success')
-            # Wait for page to load
-            for _ in range(5):
-                check_stop()
-                time.sleep(1)
-        except Exception as e:
-            log(f"⚠️ Could not navigate to apply page: {e}", 'warning')
-    
-    # Continue checking until we've checked max_lotteries number of lotteries
-    while checked_count < max_lotteries:
+    while verification_attempt < max_verification_attempts:
+        lottery_number = 1
+        processed_count = 0
+        skipped_count = 0
+        failed_count = 0
+        checked_count = 0  # Number of lotteries checked (including non-existent ones)
+        lottery_results = []  # Track results for each lottery
+        reload_occurred = False  # Track if reload occurred during processing
+        
+        if verification_attempt == 0:
+            log(f"🔍 Starting to check up to {max_lotteries} lotteries for processing...", 'info')
+        else:
+            log(f"🔍 Verification attempt {verification_attempt + 1}/{max_verification_attempts}: Re-checking all lotteries from the beginning...", 'info')
+        
+        # Check for CAPTCHA on apply page before starting lottery processing
         check_stop()
+        captcha_solved = _check_and_solve_captcha_on_apply_page(driver, wait)
+        if captcha_solved:
+            log("✅ CAPTCHA solved before starting lottery processing", 'success')
+            time.sleep(2)  # Wait for page to stabilize after CAPTCHA solution
+        
+        # Ensure we're on the apply page at the start
+        check_stop()
+        if "apply.html" not in driver.current_url:
+            log(f"⚠️ Not on apply page at start. Navigating to apply page...", 'warning')
+            try:
+                driver.get(APPLY_URL)
+                log(f"✅ Navigated to apply page", 'success')
+                # Wait for page to load
+                for _ in range(5):
+                    check_stop()
+                    time.sleep(1)
+            except Exception as e:
+                log(f"⚠️ Could not navigate to apply page: {e}", 'warning')
+        
+        # Continue checking until we've checked max_lotteries number of lotteries
+        while checked_count < max_lotteries:
+            check_stop()
         
         # Ensure we're on the apply page before checking lottery status
         if "apply.html" not in driver.current_url:
@@ -1345,11 +1355,10 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                     pop04_reload_needed = _check_and_handle_pop_exceptions(driver, wait)
                     
                     if pop04_reload_needed:
-                        # Page was reloaded due to exception, wait for it to stabilize
-                        log("⏳ Waiting for page to stabilize after reload...", 'info')
-                        for _ in range(3):
-                            check_stop()
-                            time.sleep(1)
+                        # Page was reloaded due to exception - restart from first lottery
+                        log("⚠️ Page reloaded due to exception. Restarting from first lottery...", 'warning')
+                        reload_occurred = True
+                        break  # Exit inner loop to restart from first lottery
                     else:
                         # No reload needed, just brief wait before next lottery
                         check_stop()
@@ -1367,11 +1376,10 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                     pop04_reload_needed = _check_and_handle_pop_exceptions(driver, wait)
                     
                     if pop04_reload_needed:
-                        # Page was reloaded due to exception, wait for it to stabilize
-                        log("⏳ Waiting for page to stabilize after reload...", 'info')
-                        for _ in range(3):
-                            check_stop()
-                            time.sleep(1)
+                        # Page was reloaded due to exception - restart from first lottery
+                        log("⚠️ Page reloaded due to exception. Restarting from first lottery...", 'warning')
+                        reload_occurred = True
+                        break  # Exit inner loop to restart from first lottery
                     else:
                         # No reload needed, check if we need to navigate back to apply page
                         if checked_count < max_lotteries:
@@ -1406,11 +1414,10 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                 pop04_reload_needed = _check_and_handle_pop_exceptions(driver, wait)
                 
                 if pop04_reload_needed:
-                    # Page was reloaded due to exception, wait for it to stabilize
-                    log("⏳ Waiting for page to stabilize after reload...", 'info')
-                    for _ in range(3):
-                        check_stop()
-                        time.sleep(1)
+                    # Page was reloaded due to exception - restart from first lottery
+                    log("⚠️ Page reloaded due to exception. Restarting from first lottery...", 'warning')
+                    reload_occurred = True
+                    break  # Exit inner loop to restart from first lottery
                 else:
                     # No reload needed, check if we need to navigate back to apply page
                     if checked_count < max_lotteries:
@@ -1424,7 +1431,9 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                                     time.sleep(1)
                         except Exception as e2:
                             log(f"⚠️ Could not navigate to apply page after error: {e2}. Continuing anyway...", 'warning')
-                # Continue to next lottery instead of stopping
+                # Continue to next lottery instead of stopping (unless reload occurred)
+                if reload_occurred:
+                    break
         else:
             log(f"⚠️ Lottery #{lottery_number} has unexpected status: '{status_text}'. Skipping...", 'warning')
             lottery_results.append({
