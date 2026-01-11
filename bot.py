@@ -1342,7 +1342,7 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                     
                     # Check for pop04 exception message after successful lottery processing
                     check_stop()
-                    pop04_reload_needed = _check_and_handle_pop04_exception(driver, wait)
+                    pop04_reload_needed = _check_and_handle_pop_exceptions(driver, wait)
                     
                     if pop04_reload_needed:
                         # Page was reloaded due to exception, wait for it to stabilize
@@ -1364,7 +1364,7 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                     failed_count += 1
                     # Check for pop04 exception message after failed lottery processing
                     check_stop()
-                    pop04_reload_needed = _check_and_handle_pop04_exception(driver, wait)
+                    pop04_reload_needed = _check_and_handle_pop_exceptions(driver, wait)
                     
                     if pop04_reload_needed:
                         # Page was reloaded due to exception, wait for it to stabilize
@@ -1403,7 +1403,7 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                 failed_count += 1
                 # Check for pop04 exception message after error
                 check_stop()
-                pop04_reload_needed = _check_and_handle_pop04_exception(driver, wait)
+                pop04_reload_needed = _check_and_handle_pop_exceptions(driver, wait)
                 
                 if pop04_reload_needed:
                     # Page was reloaded due to exception, wait for it to stabilize
@@ -1541,12 +1541,181 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
         'message': final_message
     }
 
-def _check_and_handle_pop04_exception(driver, wait, max_reload_attempts=5):
+def _check_and_handle_pop_exceptions(driver, wait, max_reload_attempts=5):
     """
-    Check for pop04 with exception message "意図しない例外が発生しました。" and reload if found.
+    Check for pop04 or pop05 with exception messages and reload if found.
+    - pop04: "意図しない例外が発生しました。"
+    - pop05: "一定時間操作していなかったため、OKボタンタップして再度開けてください。"
     Returns True if page was reloaded, False otherwise.
     """
     try:
+        # First check pop05
+        pop05_elements = driver.find_elements(By.ID, "pop05")
+        if pop05_elements and pop05_elements[0].is_displayed():
+            pop05_element = pop05_elements[0]
+            log("🔔 Popup (pop05) detected, checking content...", 'info')
+            
+            # Check if pop05 contains timeout message
+            pop05_message_xpath = '//*[@id="pop05"]/div/div[1]/p'
+            try:
+                pop05_message_element = driver.find_element(By.XPATH, pop05_message_xpath)
+                pop05_message_text = pop05_message_element.text.strip()
+                log(f"📋 Pop05 message: {pop05_message_text}", 'info')
+                
+                if "一定時間操作していなかったため、OKボタンタップして再度開けてください。" in pop05_message_text:
+                    log(f"⚠️ Timeout message detected in pop05: '一定時間操作していなかったため、OKボタンタップして再度開けてください。' - Reloading page...", 'warning')
+                    
+                    # Reload the page when timeout message is detected (up to max_reload_attempts times)
+                    reload_attempt = 0
+                    while reload_attempt < max_reload_attempts:
+                        check_stop()
+                        reload_attempt += 1
+                        log(f"🔄 Reload attempt {reload_attempt}/{max_reload_attempts} (pop05)...", 'info')
+                        
+                        reload_success = False
+                        current_url_before = driver.current_url
+                        log(f"📍 Current URL before reload: {current_url_before}", 'info')
+                        
+                        # Try multiple reload methods
+                        try:
+                            # Method 1: driver.refresh()
+                            driver.refresh()
+                            check_stop()
+                            for _ in range(5):
+                                check_stop()
+                                time.sleep(1)
+                            log(f"✅ Page reloaded via refresh() (Attempt {reload_attempt})", 'success')
+                            reload_success = True
+                        except Exception as e:
+                            log(f"⚠️ Could not reload via refresh(): {e}. Trying driver.get()...", 'warning')
+                            try:
+                                # Method 2: driver.get()
+                                current_url = driver.current_url or APPLY_URL
+                                driver.get(current_url)
+                                check_stop()
+                                for _ in range(5):
+                                    check_stop()
+                                    time.sleep(1)
+                                log(f"✅ Page reloaded via get() (Attempt {reload_attempt})", 'success')
+                                reload_success = True
+                            except Exception as e2:
+                                log(f"⚠️ Could not reload via get(): {e2}. Trying JavaScript...", 'warning')
+                                try:
+                                    # Method 3: JavaScript location.reload()
+                                    driver.execute_script("window.location.reload(true);")
+                                    check_stop()
+                                    for _ in range(5):
+                                        check_stop()
+                                        time.sleep(1)
+                                    log(f"✅ Page reloaded via JavaScript (Attempt {reload_attempt})", 'success')
+                                    reload_success = True
+                                except Exception as e3:
+                                    log(f"❌ All reload methods failed (Attempt {reload_attempt}): {e3}", 'error')
+                                    reload_success = False
+                        
+                        if reload_success:
+                            # Wait for page to stabilize
+                            log(f"⏳ Waiting for page to stabilize after reload {reload_attempt}...", 'info')
+                            time.sleep(3)
+                            
+                            # Check if pop05 still exists with timeout message
+                            check_stop()
+                            try:
+                                pop05_check = driver.find_elements(By.ID, "pop05")
+                                if pop05_check and pop05_check[0].is_displayed():
+                                    try:
+                                        pop05_message_check = driver.find_element(By.XPATH, pop05_message_xpath)
+                                        pop05_message_text_check = pop05_message_check.text.strip()
+                                        if "一定時間操作していなかったため、OKボタンタップして再度開けてください。" in pop05_message_text_check:
+                                            if reload_attempt < max_reload_attempts:
+                                                log(f"⚠️ Timeout message still present after reload {reload_attempt}. Retrying...", 'warning')
+                                                continue  # Retry reload
+                                            else:
+                                                log(f"❌ Timeout message still present after {max_reload_attempts} reload attempts. Closing pop05...", 'error')
+                                                # Try to close pop05
+                                                try:
+                                                    pop05_link_xpath = '//*[@id="pop05"]/div/div[1]/ul/li/a'
+                                                    pop05_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop05_link_xpath)))
+                                                    _human_like_click(driver, pop05_link)
+                                                    log("✅ Pop05 closed after max reload attempts", 'success')
+                                                    time.sleep(1)
+                                                except:
+                                                    pass
+                                                return True  # Page was reloaded
+                                        else:
+                                            log("✅ Timeout message cleared after reload. Closing pop05...", 'success')
+                                            # Close pop05 normally
+                                            try:
+                                                pop05_link_xpath = '//*[@id="pop05"]/div/div[1]/ul/li/a'
+                                                pop05_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop05_link_xpath)))
+                                                _human_like_click(driver, pop05_link)
+                                                log("✅ Pop05 closed", 'success')
+                                                time.sleep(1)
+                                            except:
+                                                pass
+                                            return True  # Page was reloaded
+                                    except:
+                                        log("✅ Pop05 message check completed. Closing pop05...", 'success')
+                                        # Try to close pop05
+                                        try:
+                                            pop05_link_xpath = '//*[@id="pop05"]/div/div[1]/ul/li/a'
+                                            pop05_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop05_link_xpath)))
+                                            _human_like_click(driver, pop05_link)
+                                            log("✅ Pop05 closed", 'success')
+                                            time.sleep(1)
+                                        except:
+                                            pass
+                                        return True  # Page was reloaded
+                                else:
+                                    log(f"✅ Pop05 cleared after reload {reload_attempt}", 'success')
+                                    return True  # Page was reloaded
+                            except Exception as e:
+                                log(f"⚠️ Error checking pop05 after reload: {e}. Assuming cleared.", 'warning')
+                                return True  # Page was reloaded
+                        else:
+                            # Reload failed
+                            if reload_attempt < max_reload_attempts:
+                                log(f"⚠️ Reload attempt {reload_attempt} failed. Will retry...", 'warning')
+                                time.sleep(2)
+                                continue
+                            else:
+                                log(f"❌ All {max_reload_attempts} reload attempts failed. Closing pop05...", 'error')
+                                # Try to close pop05
+                                try:
+                                    pop05_link_xpath = '//*[@id="pop05"]/div/div[1]/ul/li/a'
+                                    pop05_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop05_link_xpath)))
+                                    _human_like_click(driver, pop05_link)
+                                    log("✅ Pop05 closed after all reload attempts failed", 'success')
+                                    time.sleep(1)
+                                except:
+                                    pass
+                                return False  # Page reload failed, but tried
+                else:
+                    # Pop05 exists but no timeout message - close it normally
+                    log("ℹ️ Pop05 detected but no timeout message. Closing normally...", 'info')
+                    try:
+                        pop05_link_xpath = '//*[@id="pop05"]/div/div[1]/ul/li/a'
+                        pop05_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop05_link_xpath)))
+                        _human_like_click(driver, pop05_link)
+                        log("✅ Pop05 closed", 'success')
+                        time.sleep(1)
+                    except Exception as e:
+                        log(f"⚠️ Could not close pop05: {e}", 'warning')
+                    return False  # No reload needed
+            except Exception as e:
+                log(f"⚠️ Could not read pop05 message: {e}. Trying to close pop05...", 'warning')
+                try:
+                    pop05_link_xpath = '//*[@id="pop05"]/div/div[1]/ul/li/a'
+                    pop05_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop05_link_xpath)))
+                    _human_like_click(driver, pop05_link)
+                    log("✅ Pop05 closed (fallback)", 'success')
+                    time.sleep(1)
+                except:
+                    pass
+                return False  # No reload needed
+        
+        # Then check pop04 (original logic)
+        pop04_elements = driver.find_elements(By.ID, "pop04")
         check_stop()
         pop04_elements = driver.find_elements(By.ID, "pop04")
         if pop04_elements and pop04_elements[0].is_displayed():
@@ -1962,7 +2131,7 @@ def _process_lottery_entry(driver, wait, lottery_number=1):
                         log(f"⚠️ Could not close modal: {e}. Checking for pop04 exception message...", 'warning')
                         # Check for pop04 exception message instead of automatically reloading
                         check_stop()
-                        pop04_reload_needed = _check_and_handle_pop04_exception(driver, wait, max_reload_attempts=5)
+                        pop04_reload_needed = _check_and_handle_pop_exceptions(driver, wait, max_reload_attempts=5)
                         if not pop04_reload_needed:
                             # If no pop04 exception, try to navigate back to apply page only if not already there
                             try:
@@ -1983,7 +2152,7 @@ def _process_lottery_entry(driver, wait, lottery_number=1):
         # Check for pop04 exception message "意図しない例外が発生しました。" after lottery processing
         check_stop()
         log("🔍 Checking for pop04 exception message after lottery processing...", 'info')
-        pop04_reload_needed = _check_and_handle_pop04_exception(driver, wait, max_reload_attempts=5)
+        pop04_reload_needed = _check_and_handle_pop_exceptions(driver, wait, max_reload_attempts=5)
         if pop04_reload_needed:
             log("✅ Pop04 exception handled and page reloaded", 'success')
         
