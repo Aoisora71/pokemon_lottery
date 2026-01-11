@@ -9,6 +9,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.action_chains import ActionChains
+import random
 from webdriver_manager.chrome import ChromeDriverManager
 import requests
 from dotenv import load_dotenv
@@ -104,6 +106,86 @@ def log(message, level='info'):
     else:
         # Direct execution mode: print directly to terminal
         print(terminal_message, flush=True)
+
+def _human_like_scroll_to_element(driver, element):
+    """
+    Scroll element into view with human-like behavior (smooth scroll)
+    """
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element)
+        time.sleep(random.uniform(0.3, 0.6))  # Random wait after scroll
+    except Exception as e:
+        log(f"⚠️ Could not scroll to element: {e}", 'warning')
+        try:
+            # Fallback to instant scroll
+            driver.execute_script("arguments[0].scrollIntoView(true);", element)
+            time.sleep(0.3)
+        except:
+            pass
+
+def _human_like_click(driver, element, wait_time_before=None, wait_time_after=None):
+    """
+    Perform human-like click using ActionChains (move to element, then click)
+    """
+    try:
+        # Scroll element into view first
+        _human_like_scroll_to_element(driver, element)
+        
+        # Wait before click (human-like delay)
+        if wait_time_before is None:
+            wait_time_before = random.uniform(0.2, 0.5)
+        time.sleep(wait_time_before)
+        
+        # Use ActionChains to move mouse to element and click
+        actions = ActionChains(driver)
+        actions.move_to_element(element).pause(random.uniform(0.1, 0.2)).click().perform()
+        
+        # Wait after click (human-like delay)
+        if wait_time_after is None:
+            wait_time_after = random.uniform(0.2, 0.4)
+        time.sleep(wait_time_after)
+        
+        return True
+    except Exception as e:
+        log(f"⚠️ Human-like click failed: {e}, trying fallback...", 'warning')
+        try:
+            # Fallback to JavaScript click if ActionChains fails
+            driver.execute_script("arguments[0].click();", element)
+            time.sleep(0.2)
+            return True
+        except Exception as e2:
+            log(f"❌ Fallback click also failed: {e2}", 'error')
+            raise
+
+def _human_like_type(element, text, clear_first=True):
+    """
+    Type text with human-like delays between keystrokes
+    """
+    try:
+        if clear_first:
+            element.clear()
+            time.sleep(random.uniform(0.1, 0.2))
+        
+        # Type with random delays between characters (simulating human typing)
+        for char in text:
+            element.send_keys(char)
+            # Random delay between 0.05 and 0.15 seconds per character (human-like)
+            time.sleep(random.uniform(0.05, 0.15))
+        
+        # Final delay after typing
+        time.sleep(random.uniform(0.2, 0.4))
+        return True
+    except Exception as e:
+        log(f"⚠️ Human-like typing failed: {e}, trying fallback...", 'warning')
+        try:
+            if clear_first:
+                element.clear()
+            element.send_keys(text)
+            time.sleep(0.2)
+            return True
+        except Exception as e2:
+            log(f"❌ Fallback typing also failed: {e2}", 'error')
+            raise
 
 def check_login_status_message(driver, wait=None):
     """Check and log the login status message from the page xpath: //*[@id="main"]/div/div[2]/div/div[1]/p
@@ -365,27 +447,25 @@ def _attempt_single_login(driver, wait, attempt_number=1):
         check_stop()  # Check stop before entering credentials
         log(f"📧 Entering email: {EMAIL}", 'info')
         email_field = wait.until(EC.presence_of_element_located((By.ID, "email")))
-        email_field.clear()
-        email_field.send_keys(EMAIL)
+        _human_like_scroll_to_element(driver, email_field)
+        _human_like_type(email_field, EMAIL)
         log("✅ Email entered successfully", 'success')
         check_stop()
-        time.sleep(1)
         
         check_stop()
         log("🔒 Entering password...", 'info')
         if PASSWORD is None:
             raise ValueError("PASSWORD is not set. Please set it in .env file or include it in column B of the Excel file.")
         password_field = driver.find_element(By.ID, "password")
-        password_field.clear()
-        password_field.send_keys(PASSWORD)
+        _human_like_scroll_to_element(driver, password_field)
+        _human_like_type(password_field, PASSWORD)
         log("✅ Password entered successfully", 'success')
         check_stop()
-        time.sleep(1)
         
         check_stop()
         log("🖱️ Clicking login button...", 'info')
         login_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.loginBtn")))
-        driver.execute_script("arguments[0].click();", login_btn)
+        _human_like_click(driver, login_btn)
         log("⏳ Waiting for login response...", 'info')
         # Check stop during login wait
         for _ in range(8):
@@ -509,19 +589,18 @@ def lottery_begin(driver, wait=None):
                 
                 log("🔄 Re-entering credentials after CAPTCHA...", 'info')
                 email_field = driver.find_element(By.ID, "email")
-                email_field.clear()
-                email_field.send_keys(EMAIL)
+                _human_like_scroll_to_element(driver, email_field)
+                _human_like_type(email_field, EMAIL)
                 log("✅ Email re-entered", 'success')
                 
                 password_field = driver.find_element(By.ID, "password")
-                password_field.clear()
-                password_field.send_keys(PASSWORD)
+                _human_like_scroll_to_element(driver, password_field)
+                _human_like_type(password_field, PASSWORD)
                 log("✅ Password re-entered", 'success')
-                time.sleep(1)
                 
                 log("🖱️ Clicking login button again...", 'info')
                 login_btn = driver.find_element(By.CSS_SELECTOR, "a.loginBtn")
-                driver.execute_script("arguments[0].click();", login_btn)
+                _human_like_click(driver, login_btn)
                 log("⏳ Waiting for login response after CAPTCHA...", 'info')
                 # Check stop during login wait
                 for _ in range(8):
@@ -567,16 +646,15 @@ def lottery_begin(driver, wait=None):
             check_stop()
             log("⌨️ Entering OTP into form...", 'info')
             otp_field = wait.until(EC.presence_of_element_located((By.ID, "authCode")))
-            otp_field.clear()
-            otp_field.send_keys(otp)
+            _human_like_scroll_to_element(driver, otp_field)
+            _human_like_type(otp_field, otp)
             log("✅ OTP entered successfully", 'success')
             check_stop()
-            time.sleep(1)
             
             check_stop()
             log("🖱️ Submitting OTP...", 'info')
             submit_btn = wait.until(EC.element_to_be_clickable((By.ID, "certify")))
-            driver.execute_script("arguments[0].click();", submit_btn)
+            _human_like_click(driver, submit_btn)
             log("⏳ OTP submitted, waiting for authentication response...", 'info')
             # Check stop during OTP response wait
             for _ in range(10):
@@ -617,16 +695,15 @@ def lottery_begin(driver, wait=None):
                 check_stop()
                 log(f"⌨️ Entering fresh OTP: {otp}", 'info')
                 otp_field = driver.find_element(By.ID, "authCode")
-                otp_field.clear()
-                otp_field.send_keys(otp)
+                _human_like_scroll_to_element(driver, otp_field)
+                _human_like_type(otp_field, otp)
                 log("✅ Fresh OTP entered", 'success')
                 check_stop()
-                time.sleep(1)
                 
                 check_stop()
                 log("🖱️ Submitting fresh OTP...", 'info')
                 submit_btn = driver.find_element(By.ID, "certify")
-                driver.execute_script("arguments[0].click();", submit_btn)
+                _human_like_click(driver, submit_btn)
                 log("⏳ Waiting for authentication response after retry...", 'info')
                 # Check stop during retry wait
                 for _ in range(10):
@@ -818,7 +895,7 @@ def lottery_begin(driver, wait=None):
                                                     try:
                                                         pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
                                                         pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)))
-                                                        driver.execute_script("arguments[0].click();", pop04_link)
+                                                        _human_like_click(driver, pop04_link)
                                                         log("✅ Pop04 modal closed after max reload attempts", 'success')
                                                         time.sleep(1)
                                                     except:
@@ -830,9 +907,8 @@ def lottery_begin(driver, wait=None):
                                                 try:
                                                     pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
                                                     pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)))
-                                                    driver.execute_script("arguments[0].click();", pop04_link)
+                                                    _human_like_click(driver, pop04_link)
                                                     log("✅ Pop04 modal closed", 'success')
-                                                    time.sleep(1)
                                                 except:
                                                     pass
                                                 break  # Exit reload loop - exception cleared
@@ -842,7 +918,7 @@ def lottery_begin(driver, wait=None):
                                             try:
                                                 pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
                                                 pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)))
-                                                driver.execute_script("arguments[0].click();", pop04_link)
+                                                _human_like_click(driver, pop04_link)
                                                 log("✅ Pop04 modal closed", 'success')
                                                 time.sleep(1)
                                             except:
@@ -866,9 +942,8 @@ def lottery_begin(driver, wait=None):
                                     try:
                                         pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
                                         pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)))
-                                        driver.execute_script("arguments[0].click();", pop04_link)
+                                        _human_like_click(driver, pop04_link)
                                         log("✅ Pop04 modal closed after all reload attempts failed", 'success')
-                                        time.sleep(1)
                                     except:
                                         pass
                                     break  # Exit reload loop
@@ -885,10 +960,9 @@ def lottery_begin(driver, wait=None):
                                 # Method 1: Try to find and click the link element
                                 try:
                                     pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)), timeout=5)
-                                    driver.execute_script("arguments[0].click();", pop04_link)
+                                    _human_like_click(driver, pop04_link)
                                     log("✅ Pop04 closed via link click", 'success')
                                     pop04_closed = True
-                                    time.sleep(1)
                                 except Exception as e1:
                                     log(f"⚠️ Could not close pop04 via link: {e1}. Trying alternative methods...", 'warning')
                                     # Method 2: Try to find and click any close button or link in pop04
@@ -896,10 +970,9 @@ def lottery_begin(driver, wait=None):
                                         close_buttons = driver.find_elements(By.XPATH, '//*[@id="pop04"]//a | //*[@id="pop04"]//button')
                                         for btn in close_buttons:
                                             if btn.is_displayed() and btn.is_enabled():
-                                                driver.execute_script("arguments[0].click();", btn)
+                                                _human_like_click(driver, btn)
                                                 log("✅ Pop04 closed via alternative button", 'success')
                                                 pop04_closed = True
-                                                time.sleep(1)
                                                 break
                                     except Exception as e2:
                                         log(f"⚠️ Could not close pop04 via alternative buttons: {e2}", 'warning')
@@ -928,9 +1001,8 @@ def lottery_begin(driver, wait=None):
                             time.sleep(1)
                             pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
                             pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)), timeout=5)
-                            driver.execute_script("arguments[0].click();", pop04_link)
+                            _human_like_click(driver, pop04_link)
                             log("✅ Pop04 closed (fallback method)", 'success')
-                            time.sleep(1)
                         except Exception as e2:
                             log(f"⚠️ Could not close pop04 (fallback): {e2}. It may close automatically. Proceeding...", 'warning')
                         break  # Exit reload loop - treat as normal case
@@ -956,9 +1028,9 @@ def lottery_begin(driver, wait=None):
                     # Try multiple methods to close pop04
                     pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
                     pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)), timeout=5)
-                    driver.execute_script("arguments[0].click();", pop04_link)
+                    _human_like_click(driver, pop04_link)
                     log("✅ Pop04 closed in final check", 'success')
-                    time.sleep(2)  # Wait for pop04 to fully close
+                    time.sleep(random.uniform(1.5, 2.5))  # Wait for pop04 to fully close
                     
                     # Verify pop04 is closed
                     pop04_verify_check = driver.find_elements(By.ID, "pop04")
@@ -1421,20 +1493,32 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
     # 3. Any failure or skipped (closed) or not exist → "失敗"
     # 4. Mixed (some success, some failure) → "失敗"
     # 5. Mixed (some success, some skipped completed) → Check: if all are success or skipped completed, it's success
+    
+    # Log detailed information for debugging
+    log(f"🔍 Analyzing {len(lottery_results)} lottery results for final status...", 'info')
+    log(f"🔍 Results breakdown: success={has_success}, skipped_completed={has_skipped_completed}, skipped_closed={has_skipped_closed}, failure={has_failure}, not_exist={has_not_exist}, interrupted={has_interrupted}", 'info')
+    log(f"🔍 Detail parts: {detail_parts}", 'info')
+    
     if has_interrupted:
         final_status = '中断'
         final_message = '中断: ' + '、'.join(detail_parts)
+        log(f"📋 Final status determined: {final_status} (interrupted)", 'info')
     elif has_failure or has_skipped_closed or has_not_exist:
         # If there's any failure, skipped (closed), or not exist, it's a failure
         final_status = '失敗'
         final_message = '失敗: ' + '、'.join(detail_parts)
+        log(f"📋 Final status determined: {final_status} (has failure/skipped_closed/not_exist)", 'info')
     else:
         # Check if all lotteries are either success or skipped (completed)
         # This covers both cases: all success, all skipped (completed), or mixed success + skipped (completed)
         all_success_or_completed = True
+        log(f"🔍 Checking if all lotteries are success or skipped (completed)...", 'info')
         for result in lottery_results:
             status = result['status']
+            lottery_num = result['lottery']
+            log(f"🔍 Checking lottery {lottery_num}: status = '{status}'", 'info')
             if status not in ['成功', 'スキップ(完了)']:
+                log(f"🔍 Lottery {lottery_num} status '{status}' is not success or skipped (completed). All success/completed check failed.", 'info')
                 all_success_or_completed = False
                 break
         
@@ -1442,10 +1526,12 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
             # All lotteries are success or skipped (completed), it's a success
             final_status = '成功'
             final_message = '成功'
+            log(f"📋 Final status determined: {final_status} (all lotteries are success or skipped completed)", 'success')
         else:
             # Shouldn't reach here due to previous checks, but handle it
             final_status = '失敗'
             final_message = '失敗: ' + '、'.join(detail_parts)
+            log(f"📋 Final status determined: {final_status} (unexpected case - not all success/completed)", 'warning')
     
     log(f"📋 Final lottery result: {final_status} - {final_message}", 'info')
     
@@ -1548,7 +1634,7 @@ def _check_and_handle_pop04_exception(driver, wait, max_reload_attempts=5):
                                                 try:
                                                     pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
                                                     pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)))
-                                                    driver.execute_script("arguments[0].click();", pop04_link)
+                                                    _human_like_click(driver, pop04_link)
                                                     log("✅ Pop04 closed after max reload attempts", 'success')
                                                     time.sleep(1)
                                                 except:
@@ -1560,7 +1646,7 @@ def _check_and_handle_pop04_exception(driver, wait, max_reload_attempts=5):
                                             try:
                                                 pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
                                                 pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)))
-                                                driver.execute_script("arguments[0].click();", pop04_link)
+                                                _human_like_click(driver, pop04_link)
                                                 log("✅ Pop04 closed", 'success')
                                                 time.sleep(1)
                                             except:
@@ -1572,7 +1658,7 @@ def _check_and_handle_pop04_exception(driver, wait, max_reload_attempts=5):
                                         try:
                                             pop04_link_xpath = '//*[@id="pop04"]/div/div[1]/ul/li/a'
                                             pop04_link = wait.until(EC.element_to_be_clickable((By.XPATH, pop04_link_xpath)))
-                                            driver.execute_script("arguments[0].click();", pop04_link)
+                                            _human_like_click(driver, pop04_link)
                                             log("✅ Pop04 closed", 'success')
                                             time.sleep(1)
                                         except:
@@ -1650,9 +1736,9 @@ def _process_lottery_entry(driver, wait, lottery_number=1):
         log(f"🖱️ Clicking lottery #{lottery_number} details (dt)...", 'info')
         dt_xpath = f'//*[@id="main"]/div[1]/ul/li[{lottery_number}]/div[2]/dl/dt'
         dt_element = wait.until(EC.element_to_be_clickable((By.XPATH, dt_xpath)))
-        driver.execute_script("arguments[0].click();", dt_element)
+        _human_like_click(driver, dt_element)
         check_stop()
-        time.sleep(1)
+        time.sleep(random.uniform(0.5, 1.0))  # Wait for details to expand
         
         # Step 3: Click radio button - try multiple strategies to ensure it works
         check_stop()
@@ -1787,10 +1873,11 @@ def _process_lottery_entry(driver, wait, lottery_number=1):
         log(f"✅ Checking checkbox for lottery #{lottery_number}...", 'info')
         checkbox_xpath = f'//*[@id="main"]/div[1]/ul/li[{lottery_number}]/div[2]/dl/dd/div[3]/form/div/div'
         checkbox_element = wait.until(EC.element_to_be_clickable((By.XPATH, checkbox_xpath)))
-        driver.execute_script("arguments[0].click();", checkbox_element)
+        _human_like_scroll_to_element(driver, checkbox_element)
+        time.sleep(random.uniform(0.2, 0.4))
+        _human_like_click(driver, checkbox_element)
         log(f"✅ Checkbox checked for lottery #{lottery_number}", 'success')
         check_stop()
-        time.sleep(1)
         
         # Step 5: Check for CAPTCHA before submitting application
         check_stop()
@@ -1805,9 +1892,11 @@ def _process_lottery_entry(driver, wait, lottery_number=1):
         log(f"🔔 Clicking submit button for lottery #{lottery_number} to open modal...", 'info')
         submit_xpath = f'//*[@id="main"]/div[1]/ul/li[{lottery_number}]/div[2]/dl/dd/div[3]/form/ul[2]/li/a'
         submit_element = wait.until(EC.element_to_be_clickable((By.XPATH, submit_xpath)))
-        driver.execute_script("arguments[0].click();", submit_element)
+        _human_like_scroll_to_element(driver, submit_element)
+        time.sleep(random.uniform(0.3, 0.5))
+        _human_like_click(driver, submit_element)
         check_stop()
-        time.sleep(2)  # Wait for modal to appear
+        time.sleep(random.uniform(1.5, 2.5))  # Wait for modal to appear
         
         # Step 7: Wait for modal to appear and click apply button
         check_stop()
@@ -1824,7 +1913,9 @@ def _process_lottery_entry(driver, wait, lottery_number=1):
         check_stop()
         log(f"🎯 Clicking apply button (applyBtn) in modal for lottery #{lottery_number}...", 'info')
         apply_btn = wait.until(EC.element_to_be_clickable((By.ID, "applyBtn")))
-        driver.execute_script("arguments[0].click();", apply_btn)
+        _human_like_scroll_to_element(driver, apply_btn)
+        time.sleep(random.uniform(0.3, 0.5))
+        _human_like_click(driver, apply_btn)
         log(f"✅ Application submitted successfully for lottery #{lottery_number}!", 'success')
         
         # Wait for confirmation and page response
@@ -1860,7 +1951,7 @@ def _process_lottery_entry(driver, wait, lottery_number=1):
                         # Try to find and click close button or overlay
                         close_buttons = driver.find_elements(By.XPATH, '//*[@id="pop01"]//button[contains(@class, "close")] | //*[@id="pop01"]//a[contains(@class, "close")] | //*[@id="pop01"]//*[contains(@onclick, "close")]')
                         if close_buttons:
-                            driver.execute_script("arguments[0].click();", close_buttons[0])
+                            _human_like_click(driver, close_buttons[0])
                             log(f"✅ Modal closed via close button", 'success')
                         else:
                             # Try clicking outside modal or ESC key

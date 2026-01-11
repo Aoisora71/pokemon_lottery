@@ -41,6 +41,11 @@ bot_status = {
     'current_email': None,
     'progress': 0,
     'total': 0,
+    'total_emails': 0,  # Total number of emails in the file
+    'processed_emails': 0,  # Number of emails processed (including skipped ones that were already successful)
+    'success_count': 0,  # Number of successful emails
+    'failed_count': 0,  # Number of failed emails
+    'skipped_count': 0,  # Number of emails skipped (already marked as successful in Excel)
     'current_step': 'Idle',
     'logs': [],
     'errors': []
@@ -199,6 +204,11 @@ def run_bot_task(excel_file_path, lottery_count=1):
         total_rows = len(data_rows)
         bot_status['total'] = total_rows
         bot_status['progress'] = 0
+        bot_status['total_emails'] = total_email_count
+        bot_status['processed_emails'] = skipped_count  # Already processed (skipped) emails are counted as processed
+        bot_status['success_count'] = 0
+        bot_status['failed_count'] = 0
+        bot_status['skipped_count'] = skipped_count
         
         log_message(f"📊 Found {total_email_count} email(s) in Excel file", 'info')
         if skipped_count > 0:
@@ -256,12 +266,17 @@ def run_bot_task(excel_file_path, lottery_count=1):
                 log_message(f"⏭️ Skipping email {user_email} (Excel row {row_num}) - Column C already shows '成功'", 'info')
                 bot_status['current_email'] = user_email
                 bot_status['progress'] = progress_idx
+                bot_status['processed_emails'] = skipped_count + progress_idx  # Update processed count (skipped + processed so far)
+                bot_status['success_count'] += 1  # Count skipped emails as success
                 bot_status['current_step'] = f'Skipped {user_email} (already successful)'
+                socketio.emit('status_update', bot_status)  # Emit update for skipped email
                 continue  # Skip this email and proceed to next one
             
             bot_status['current_email'] = user_email
             bot_status['progress'] = progress_idx
+            bot_status['processed_emails'] = skipped_count + progress_idx  # Update processed count
             bot_status['current_step'] = f'Processing {user_email}'
+            socketio.emit('status_update', bot_status)  # Emit update before processing
             
             log_message(f"📧 Processing email {progress_idx}/{total_rows}: {user_email} (Excel row {row_num})", 'info')
             
@@ -401,6 +416,18 @@ def run_bot_task(excel_file_path, lottery_count=1):
                             worksheet = workbook.active
                         except:
                             pass
+                    
+                    # Update success/failed counts based on final_status
+                    if final_status == '成功':
+                        bot_status['success_count'] += 1
+                    elif final_status == '失敗':
+                        bot_status['failed_count'] += 1
+                    
+                    # Update processed count (skipped_count already included, now add this processed one)
+                    bot_status['processed_emails'] = skipped_count + progress_idx
+                    
+                    # Emit status update
+                    socketio.emit('status_update', bot_status)
                 
                 log_message(f"✅ Successfully processed: {user_email}", 'success')
                 
@@ -412,6 +439,11 @@ def run_bot_task(excel_file_path, lottery_count=1):
                     'error': str(e),
                     'timestamp': datetime.now().isoformat()
                 })
+                
+                # Update failed count for exception
+                bot_status['failed_count'] += 1
+                bot_status['processed_emails'] = skipped_count + progress_idx
+                socketio.emit('status_update', bot_status)
                 
                 # Write error result to Excel columns C and D
                 # C column: "失敗"
@@ -610,6 +642,11 @@ def start_bot():
         'current_email': None,
         'progress': 0,
         'total': 0,
+        'total_emails': 0,
+        'processed_emails': 0,
+        'success_count': 0,
+        'failed_count': 0,
+        'skipped_count': 0,
         'current_step': 'Starting...',
         'logs': [],
         'errors': []

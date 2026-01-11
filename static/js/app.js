@@ -13,7 +13,6 @@ const statusIndicator = document.getElementById('statusIndicator');
 const statusDot = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
 const currentEmail = document.getElementById('currentEmail');
-const progressText = document.getElementById('progressText');
 const currentStep = document.getElementById('currentStep');
 const progressFill = document.getElementById('progressFill');
 const progressPercentage = document.getElementById('progressPercentage');
@@ -147,13 +146,25 @@ function updateStatus(status) {
         statusText.textContent = 'Idle';
     }
     
-    // Update progress
+    // Update progress statistics
+    const totalEmails = status.total_emails || 0;
+    const processedEmails = status.processed_emails || 0;
+    const successCount = status.success_count || 0;
+    const failedCount = status.failed_count || 0;
+    const skippedCount = status.skipped_count || 0;
+    
+    // Update progress display elements
+    document.getElementById('totalEmails').textContent = totalEmails;
+    document.getElementById('processedEmails').textContent = `${processedEmails} / ${totalEmails}`;
+    document.getElementById('successCount').textContent = successCount;
+    document.getElementById('failedCount').textContent = failedCount;
+    document.getElementById('skippedCount').textContent = skippedCount;
+    
     currentEmail.textContent = status.current_email || '-';
-    progressText.textContent = `${status.progress} / ${status.total}`;
     currentStep.textContent = status.current_step || 'Idle';
     
-    // Update progress bar
-    const percentage = status.total > 0 ? (status.progress / status.total) * 100 : 0;
+    // Update progress bar (based on processed emails out of total emails)
+    const percentage = totalEmails > 0 ? (processedEmails / totalEmails) * 100 : 0;
     progressFill.style.width = `${percentage}%`;
     progressPercentage.textContent = `${Math.round(percentage)}%`;
     

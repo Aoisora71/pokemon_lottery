@@ -292,6 +292,4 @@ This bot is for educational purposes only. Users are responsible for ensuring th
 
 Use at your own risk.
 
----
-
-**Made with ❤️ for Pokemon fans**
+---**Made with ❤️ for Pokemon fans**
