@@ -143,24 +143,22 @@
                             <span class="stat-value" id="successCount" style="color: #10b981;">0</span>
                         </div>
                         <div class="stat-item">
-                            <span class="stat-label">Failed:</span>
+                            <span class="stat-label">失敗:</span>
                             <span class="stat-value" id="failedCount" style="color: #ef4444;">0</span>
                         </div>
-                        <div class="stat-item">
-                            <span class="stat-label">Skipped:</span>
-                            <span class="stat-value" id="skippedCount" style="color: #6b7280;">0</span>
+                    </div>
+                    <div class="progress-text-info">
+                        <div class="text-info-item">
+                            <span class="text-info-label">現在のメール:</span>
+                            <span class="text-info-value" id="currentEmail">-</span>
                         </div>
-                        <div class="stat-item">
-                            <span class="stat-label">Current Email:</span>
-                            <span class="stat-value" id="currentEmail">-</span>
+                        <div class="text-info-item">
+                            <span class="text-info-label">ステータス:</span>
+                            <span class="text-info-value" id="currentStep">待機中</span>
                         </div>
-                        <div class="stat-item">
-                            <span class="stat-label">Status:</span>
-                            <span class="stat-value" id="currentStep">Idle</span>
-                        </div>
-                        <div class="stat-item" id="scheduledRestartItem" style="display: none;">
-                            <span class="stat-label">Scheduled Restart:</span>
-                            <span class="stat-value" id="scheduledRestart" style="color: #f59e0b;"></span>
+                        <div class="text-info-item" id="scheduledRestartItem" style="display: none;">
+                            <span class="text-info-label">予定された再起動:</span>
+                            <span class="text-info-value" id="scheduledRestart" style="color: #f59e0b;"></span>
                         </div>
                     </div>
                     <div class="progress-bar-wrapper">
@@ -168,22 +166,6 @@
                             <div class="progress-fill" id="progressFill" style="width: 0%"></div>
                         </div>
                         <span class="progress-percentage" id="progressPercentage">0%</span>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Logs Section -->
-            <section class="card logs-section">
-                <div class="section-header">
-                    <h2><i class="fas fa-terminal"></i> Logs</h2>
-                    <button class="btn btn-small" id="clearLogsBtn">
-                        <i class="fas fa-trash"></i> Clear
-                    </button>
-                </div>
-                <div class="logs-container" id="logsContainer">
-                    <div class="log-empty">
-                        <i class="fas fa-inbox"></i>
-                        <p>No logs yet. Start the bot to see activity.</p>
                     </div>
                 </div>
             </section>

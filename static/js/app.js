@@ -8,8 +8,6 @@ const stopBtn = document.getElementById('stopBtn');
 const spreadsheetIdInput = document.getElementById('spreadsheetId');
 const worksheetNameInput = document.getElementById('worksheetName');
 const spreadsheetStatus = document.getElementById('spreadsheetStatus');
-const logsContainer = document.getElementById('logsContainer');
-const clearLogsBtn = document.getElementById('clearLogsBtn');
 const statusIndicator = document.getElementById('statusIndicator');
 const statusDot = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
@@ -174,16 +172,6 @@ stopBtn.addEventListener('click', async () => {
     }
 });
 
-// Clear logs
-clearLogsBtn.addEventListener('click', async () => {
-    try {
-        await fetch('/api/clear-logs', { method: 'POST' });
-        logsContainer.innerHTML = '<div class="log-empty"><i class="fas fa-inbox"></i><p>No logs yet. Start the bot to see activity.</p></div>';
-    } catch (error) {
-        showNotification('Error clearing logs: ' + error.message, 'error');
-    }
-});
-
 // Socket.IO event handlers
 socket.on('connect', () => {
     console.log('Connected to server');
@@ -196,10 +184,6 @@ socket.on('disconnect', () => {
 
 socket.on('status_update', (status) => {
     updateStatus(status);
-});
-
-socket.on('log', (logEntry) => {
-    addLog(logEntry);
 });
 
 // Functions
@@ -230,14 +214,11 @@ function updateStatus(status) {
     const processedEmails = status.processed_emails || 0;
     const successCount = status.success_count || 0;
     const failedCount = status.failed_count || 0;
-    const skippedCount = status.skipped_count || 0;
-    
     // Update progress display elements
     document.getElementById('totalEmails').textContent = totalEmails;
     document.getElementById('processedEmails').textContent = `${processedEmails} / ${totalEmails}`;
     document.getElementById('successCount').textContent = successCount;
     document.getElementById('failedCount').textContent = failedCount;
-    document.getElementById('skippedCount').textContent = skippedCount;
     
     currentEmail.textContent = status.current_email || '-';
     currentStep.textContent = status.current_step || 'Idle';
@@ -346,55 +327,6 @@ function updateUI() {
         startBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Running...';
     } else {
         startBtn.innerHTML = '<i class="fas fa-play"></i> Start Bot';
-    }
-}
-
-// Track seen logs to prevent duplicates
-const seenLogIds = new Set();
-
-function addLog(logEntry) {
-    // Use unique ID if available, otherwise fall back to timestamp + message
-    const logKey = logEntry.id ? `id-${logEntry.id}` : `${logEntry.timestamp}-${logEntry.message}`;
-    
-    // Skip if we've already seen this log
-    if (seenLogIds.has(logKey)) {
-        return;
-    }
-    
-    // Mark as seen
-    seenLogIds.add(logKey);
-    
-    // Keep only last 1000 seen log IDs to prevent memory issues
-    if (seenLogIds.size > 1000) {
-        const firstKey = seenLogIds.values().next().value;
-        seenLogIds.delete(firstKey);
-    }
-    
-    // Remove empty state if exists
-    const emptyState = logsContainer.querySelector('.log-empty');
-    if (emptyState) {
-        emptyState.remove();
-    }
-    
-    const logElement = document.createElement('div');
-    logElement.className = `log-entry ${logEntry.level}`;
-    
-    const timestamp = new Date(logEntry.timestamp).toLocaleTimeString();
-    
-    logElement.innerHTML = `
-        <span class="log-timestamp">[${timestamp}]</span>
-        <span class="log-message">${escapeHtml(logEntry.message)}</span>
-    `;
-    
-    logsContainer.appendChild(logElement);
-    
-    // Auto-scroll to bottom
-    logsContainer.scrollTop = logsContainer.scrollHeight;
-    
-    // Keep only last 500 logs in DOM
-    const logs = logsContainer.querySelectorAll('.log-entry');
-    if (logs.length > 500) {
-        logs[0].remove();
     }
 }
 

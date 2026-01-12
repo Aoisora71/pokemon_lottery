@@ -1,0 +1,18 @@
+{
+  "name": "ポケモンセンター抽選ボット",
+  "short_name": "抽選ボット",
+  "description": "ポケモンセンター抽選ボット - 自動抽選エントリーシステム",
+  "icons": [
+    {
+      "src": "/static/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "theme_color": "#6366f1",
+  "background_color": "#0f172a",
+  "display": "standalone",
+  "start_url": "/",
+  "orientation": "portrait-primary"
+}
