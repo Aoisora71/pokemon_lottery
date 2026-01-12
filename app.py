@@ -5,7 +5,7 @@ import sys
 import threading
 import queue
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 from werkzeug.utils import secure_filename
 from openpyxl import load_workbook
@@ -48,7 +48,9 @@ bot_status = {
     'skipped_count': 0,  # Number of emails skipped (already marked as successful in Excel)
     'current_step': 'Idle',
     'logs': [],
-    'errors': []
+    'errors': [],
+    'scheduled_restart_time': None,  # Scheduled restart time (ISO format string)
+    'scheduled_restart_message': None  # Human-readable restart message
 }
 
 bot_thread = None
@@ -56,6 +58,15 @@ log_queue = queue.Queue()
 _log_id_counter = 0
 _log_file_lock = threading.Lock()
 _current_log_file = None
+
+# Auto-restart scheduler
+_auto_restart_timer = None
+_auto_restart_file_path = None
+_auto_restart_lottery_count = 1
+_auto_restart_max_failures = 5
+_auto_restart_mode = 'minutes'
+_auto_restart_minutes = 60
+_auto_restart_datetime = None
 
 def get_log_filename():
     """Get the log filename for today"""
@@ -161,13 +172,64 @@ def log_message(message, level='info'):
     # Put in queue for background thread to emit (removed direct emit to avoid duplicates)
     log_queue.put(log_entry)
 
-def run_bot_task(excel_file_path, lottery_count=1):
+def start_bot_auto_restart():
+    """Start the bot automatically (for auto-restart)"""
+    global bot_thread, bot_status, _auto_restart_file_path, _auto_restart_lottery_count, _auto_restart_max_failures, _auto_restart_mode, _auto_restart_minutes, _auto_restart_datetime
+    
+    if bot_status['running']:
+        log_message("⚠️ Bot is already running, skipping auto-restart", 'warning')
+        return
+    
+    if not _auto_restart_file_path:
+        log_message("⚠️ No file path stored for auto-restart", 'warning')
+        return
+    
+    if not os.path.exists(_auto_restart_file_path):
+        log_message(f"⚠️ Excel file not found for auto-restart: {_auto_restart_file_path}", 'warning')
+        return
+    
+    log_message(f"🔄 Auto-restarting bot with file: {_auto_restart_file_path}", 'info')
+    
+    # Reset status
+    bot_status = {
+        'running': True,
+        'current_email': None,
+        'progress': 0,
+        'total': 0,
+        'total_emails': 0,
+        'processed_emails': 0,
+        'success_count': 0,
+        'failed_count': 0,
+        'skipped_count': 0,
+        'current_step': 'Auto-restarting...',
+        'logs': [],
+        'errors': []
+    }
+    
+    # Use stored restart settings or defaults
+    max_failures = _auto_restart_max_failures if '_auto_restart_max_failures' in globals() else 5
+    restart_mode = _auto_restart_mode if '_auto_restart_mode' in globals() else 'minutes'
+    restart_minutes = _auto_restart_minutes if '_auto_restart_minutes' in globals() else 60
+    restart_datetime = _auto_restart_datetime if '_auto_restart_datetime' in globals() else None
+    
+    # Start bot in separate thread with stored settings
+    bot_thread = threading.Thread(target=run_bot_task, args=(_auto_restart_file_path, _auto_restart_lottery_count, max_failures, restart_mode, restart_minutes, restart_datetime))
+    bot_thread.daemon = True
+    bot_thread.start()
+    
+    log_message("✅ Bot auto-restarted successfully", 'success')
+
+def run_bot_task(excel_file_path, lottery_count=1, max_consecutive_failures=5, restart_mode='minutes', restart_minutes=60, restart_datetime=None):
     """Run the bot in a separate thread. CAPTCHA API key is loaded from environment variable in bot.py"""
-    global bot_status
+    global bot_status, _auto_restart_timer, _auto_restart_file_path, _auto_restart_lottery_count, _auto_restart_max_failures, _auto_restart_mode, _auto_restart_minutes, _auto_restart_datetime
     
     try:
         bot_status['running'] = True
         bot_status['errors'] = []
+        
+        # Initialize consecutive failure counter
+        consecutive_failures = 0
+        MAX_CONSECUTIVE_FAILURES = max_consecutive_failures
         
         log_message("🚀 Starting bot...", 'info')
         
@@ -332,7 +394,7 @@ def run_bot_task(excel_file_path, lottery_count=1):
                         # Convert to absolute path to ensure we're saving to the correct location
                         abs_file_path = os.path.abspath(excel_file_path)
                         log_message(f"📝 Attempting to write to Excel file (absolute path): {abs_file_path}", 'info')
-                        log_message(f"📝 Excel row number: {row_num}, Column C (3): {final_status}, Column D (4): {result_message}", 'info')
+                        log_message(f"📝 Excel row number: {row_num}, Column C (3): {final_status}, Column D (4): {result_message}, Column E (5): {timestamp_str}", 'info')
                         
                         # Check file exists and get modification time before save
                         if os.path.exists(abs_file_path):
@@ -352,6 +414,9 @@ def run_bot_task(excel_file_path, lottery_count=1):
                         workbook = load_workbook(abs_file_path)
                         worksheet = workbook.active
                         
+                        # Get current timestamp
+                        timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        
                         # Write to column C (final status)
                         status_cell = worksheet.cell(row=row_num, column=3)
                         status_cell.value = final_status
@@ -361,6 +426,11 @@ def run_bot_task(excel_file_path, lottery_count=1):
                         result_cell = worksheet.cell(row=row_num, column=4)
                         result_cell.value = result_message
                         log_message(f"✅ Set cell ({row_num}, 4) [Column D] value to: {result_message}", 'success')
+                        
+                        # Write to column E (timestamp)
+                        timestamp_cell = worksheet.cell(row=row_num, column=5)
+                        timestamp_cell.value = timestamp_str
+                        log_message(f"✅ Set cell ({row_num}, 5) [Column E] value to: {timestamp_str}", 'success')
                         
                         # Save workbook with absolute path (MUST save before closing)
                         log_message(f"💾 Saving workbook to: {abs_file_path}", 'info')
@@ -388,10 +458,12 @@ def run_bot_task(excel_file_path, lottery_count=1):
                         verify_status_value = verify_status_cell.value
                         verify_result_cell = verify_worksheet.cell(row=row_num, column=4)
                         verify_result_value = verify_result_cell.value
+                        verify_timestamp_cell = verify_worksheet.cell(row=row_num, column=5)
+                        verify_timestamp_value = verify_timestamp_cell.value
                         verify_workbook.close()
                         
-                        if verify_status_value == final_status and verify_result_value == result_message:
-                            log_message(f"✅ Excel file saved and verified! Row {row_num}, Column C = '{verify_status_value}', Column D = '{verify_result_value}'", 'success')
+                        if verify_status_value == final_status and verify_result_value == result_message and verify_timestamp_value == timestamp_str:
+                            log_message(f"✅ Excel file saved and verified! Row {row_num}, Column C = '{verify_status_value}', Column D = '{verify_result_value}', Column E = '{verify_timestamp_value}'", 'success')
                             log_message(f"✅ Full file path: {abs_file_path}", 'success')
                             log_message(f"📂 IMPORTANT: Please check this file path to see the results: {abs_file_path}", 'success')
                             log_message(f"📂 The file is saved in the 'uploads' folder, not in your original upload location", 'info')
@@ -399,6 +471,7 @@ def run_bot_task(excel_file_path, lottery_count=1):
                             log_message(f"⚠️ Verification failed:", 'warning')
                             log_message(f"⚠️ Expected Column C: '{final_status}', got: '{verify_status_value}'", 'warning')
                             log_message(f"⚠️ Expected Column D: '{result_message}', got: '{verify_result_value}'", 'warning')
+                            log_message(f"⚠️ Expected Column E: '{timestamp_str}', got: '{verify_timestamp_value}'", 'warning')
                             log_message(f"⚠️ Full file path: {abs_file_path}", 'warning')
                         
                         # Reopen workbook for next iteration
@@ -408,7 +481,7 @@ def run_bot_task(excel_file_path, lottery_count=1):
                     except Exception as e:
                         log_message(f"❌ Error writing to Excel: {e}", 'error')
                         log_message(f"❌ Excel file path (absolute): {abs_file_path}", 'error')
-                        log_message(f"❌ Row: {row_num}, Columns: C (3) and D (4)", 'error')
+                        log_message(f"❌ Row: {row_num}, Columns: C (3), D (4), and E (5)", 'error')
                         traceback.print_exc()
                         # Try to reopen workbook even if save failed
                         try:
@@ -420,8 +493,97 @@ def run_bot_task(excel_file_path, lottery_count=1):
                     # Update success/failed counts based on final_status
                     if final_status == '成功':
                         bot_status['success_count'] += 1
+                        # Reset consecutive failure counter on success
+                        consecutive_failures = 0
+                        log_message(f"✅ Success! Consecutive failures reset to 0", 'success')
                     elif final_status == '失敗':
                         bot_status['failed_count'] += 1
+                        # Increment consecutive failure counter
+                        consecutive_failures += 1
+                        log_message(f"⚠️ Failure detected. Consecutive failures: {consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}", 'warning')
+                        
+                        # Check if we've reached the maximum consecutive failures
+                        if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                            log_message(f"🛑 {MAX_CONSECUTIVE_FAILURES} consecutive failures detected! Stopping bot...", 'error')
+                            
+                            # Stop the bot
+                            bot_status['running'] = False
+                            
+                            # Schedule auto-restart based on mode
+                            _auto_restart_file_path = excel_file_path
+                            _auto_restart_lottery_count = lottery_count
+                            _auto_restart_max_failures = max_consecutive_failures
+                            _auto_restart_mode = restart_mode
+                            _auto_restart_minutes = restart_minutes
+                            _auto_restart_datetime = restart_datetime
+                            
+                            # Cancel existing timer if any
+                            if _auto_restart_timer and _auto_restart_timer.is_alive():
+                                _auto_restart_timer.cancel()
+                            
+                            # Calculate restart time based on mode
+                            if restart_mode == 'minutes':
+                                # Restart after specified minutes
+                                restart_seconds = restart_minutes * 60
+                                restart_time = datetime.now() + timedelta(seconds=restart_seconds)
+                                log_message(f"⏰ Bot will automatically restart after {restart_minutes} minutes...", 'info')
+                                
+                                def schedule_restart():
+                                    time.sleep(restart_seconds)
+                                    if not bot_status['running']:
+                                        log_message(f"🔄 Auto-restarting bot after {restart_minutes} minutes wait...", 'info')
+                                        start_bot_auto_restart()
+                            else:
+                                # Restart at specific datetime
+                                if restart_datetime:
+                                    try:
+                                        # Parse datetime string (format: YYYY-MM-DDTHH:MM)
+                                        restart_dt = datetime.strptime(restart_datetime, '%Y-%m-%dT%H:%M')
+                                        now = datetime.now()
+                                        
+                                        if restart_dt <= now:
+                                            log_message(f"⚠️ Specified restart time is in the past. Restarting immediately...", 'warning')
+                                            restart_seconds = 0
+                                        else:
+                                            restart_seconds = (restart_dt - now).total_seconds()
+                                        
+                                        restart_time = restart_dt
+                                        log_message(f"⏰ Bot will automatically restart at {restart_time.strftime('%Y-%m-%d %H:%M:%S')}...", 'info')
+                                        
+                                        def schedule_restart():
+                                            time.sleep(restart_seconds)
+                                            if not bot_status['running']:
+                                                log_message(f"🔄 Auto-restarting bot at scheduled time...", 'info')
+                                                start_bot_auto_restart()
+                                    except Exception as e:
+                                        log_message(f"❌ Error parsing restart datetime: {e}. Using default 60 minutes...", 'error')
+                                        restart_seconds = 3600
+                                        restart_time = datetime.now() + timedelta(hours=1)
+                                        
+                                        def schedule_restart():
+                                            time.sleep(restart_seconds)
+                                            if not bot_status['running']:
+                                                log_message(f"🔄 Auto-restarting bot after 1 hour wait...", 'info')
+                                                start_bot_auto_restart()
+                                else:
+                                    # Fallback to 60 minutes if datetime not provided
+                                    restart_seconds = 3600
+                                    restart_time = datetime.now() + timedelta(hours=1)
+                                    log_message(f"⏰ Bot will automatically restart after 60 minutes (default)...", 'info')
+                                    
+                                    def schedule_restart():
+                                        time.sleep(restart_seconds)
+                                        if not bot_status['running']:
+                                            log_message(f"🔄 Auto-restarting bot after 1 hour wait...", 'info')
+                                            start_bot_auto_restart()
+                            
+                            _auto_restart_timer = threading.Thread(target=schedule_restart)
+                            _auto_restart_timer.daemon = True
+                            _auto_restart_timer.start()
+                            
+                            if 'restart_time' in locals():
+                                log_message(f"⏰ Auto-restart scheduled for {restart_time.strftime('%Y-%m-%d %H:%M:%S')}", 'info')
+                            break  # Exit the loop
                     
                     # Update processed count (skipped_count already included, now add this processed one)
                     bot_status['processed_emails'] = skipped_count + progress_idx
@@ -442,17 +604,121 @@ def run_bot_task(excel_file_path, lottery_count=1):
                 
                 # Update failed count for exception
                 bot_status['failed_count'] += 1
+                # Increment consecutive failure counter for exceptions too
+                consecutive_failures += 1
+                log_message(f"⚠️ Exception failure detected. Consecutive failures: {consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}", 'warning')
+                
                 bot_status['processed_emails'] = skipped_count + progress_idx
                 socketio.emit('status_update', bot_status)
                 
-                # Write error result to Excel columns C and D
+                # Check if we've reached the maximum consecutive failures
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    log_message(f"🛑 {MAX_CONSECUTIVE_FAILURES} consecutive failures detected! Stopping bot...", 'error')
+                    
+                    # Stop the bot
+                    bot_status['running'] = False
+                    
+                    # Schedule auto-restart based on mode
+                    _auto_restart_file_path = excel_file_path
+                    _auto_restart_lottery_count = lottery_count
+                    _auto_restart_max_failures = max_consecutive_failures
+                    _auto_restart_mode = restart_mode
+                    _auto_restart_minutes = restart_minutes
+                    _auto_restart_datetime = restart_datetime
+                    
+                    # Cancel existing timer if any
+                    if _auto_restart_timer and _auto_restart_timer.is_alive():
+                        _auto_restart_timer.cancel()
+                    
+                    # Calculate restart time based on mode
+                    restart_time = None
+                    restart_message = None
+                    
+                    if restart_mode == 'minutes':
+                        # Restart after specified minutes
+                        restart_seconds = restart_minutes * 60
+                        restart_time = datetime.now() + timedelta(seconds=restart_seconds)
+                        restart_message = f"{restart_minutes}分後"
+                        log_message(f"⏰ Bot will automatically restart after {restart_minutes} minutes...", 'info')
+                        
+                        def schedule_restart():
+                            time.sleep(restart_seconds)
+                            if not bot_status['running']:
+                                log_message(f"🔄 Auto-restarting bot after {restart_minutes} minutes wait...", 'info')
+                                start_bot_auto_restart()
+                    else:
+                        # Restart at specific datetime
+                        if restart_datetime:
+                            try:
+                                # Parse datetime string (format: YYYY-MM-DDTHH:MM)
+                                restart_dt = datetime.strptime(restart_datetime, '%Y-%m-%dT%H:%M')
+                                now = datetime.now()
+                                
+                                if restart_dt <= now:
+                                    log_message(f"⚠️ Specified restart time is in the past. Restarting immediately...", 'warning')
+                                    restart_seconds = 0
+                                    restart_time = now
+                                    restart_message = "すぐに"
+                                else:
+                                    restart_seconds = (restart_dt - now).total_seconds()
+                                    restart_time = restart_dt
+                                    restart_message = restart_time.strftime('%Y-%m-%d %H:%M:%S')
+                                
+                                log_message(f"⏰ Bot will automatically restart at {restart_time.strftime('%Y-%m-%d %H:%M:%S')}...", 'info')
+                                
+                                def schedule_restart():
+                                    time.sleep(restart_seconds)
+                                    if not bot_status['running']:
+                                        log_message(f"🔄 Auto-restarting bot at scheduled time...", 'info')
+                                        start_bot_auto_restart()
+                            except Exception as e:
+                                log_message(f"❌ Error parsing restart datetime: {e}. Using default 60 minutes...", 'error')
+                                restart_seconds = 3600
+                                restart_time = datetime.now() + timedelta(hours=1)
+                                restart_message = "60分後"
+                                
+                                def schedule_restart():
+                                    time.sleep(restart_seconds)
+                                    if not bot_status['running']:
+                                        log_message(f"🔄 Auto-restarting bot after 1 hour wait...", 'info')
+                                        start_bot_auto_restart()
+                        else:
+                            # Fallback to 60 minutes if datetime not provided
+                            restart_seconds = 3600
+                            restart_time = datetime.now() + timedelta(hours=1)
+                            restart_message = "60分後"
+                            log_message(f"⏰ Bot will automatically restart after 60 minutes (default)...", 'info')
+                            
+                            def schedule_restart():
+                                time.sleep(restart_seconds)
+                                if not bot_status['running']:
+                                    log_message(f"🔄 Auto-restarting bot after 1 hour wait...", 'info')
+                                    start_bot_auto_restart()
+                    
+                    # Update bot_status with scheduled restart time
+                    if restart_time:
+                        bot_status['scheduled_restart_time'] = restart_time.isoformat()
+                        bot_status['scheduled_restart_message'] = restart_message
+                        socketio.emit('status_update', bot_status)
+                    
+                    _auto_restart_timer = threading.Thread(target=schedule_restart)
+                    _auto_restart_timer.daemon = True
+                    _auto_restart_timer.start()
+                    
+                    if restart_time:
+                        log_message(f"⏰ Auto-restart scheduled for {restart_time.strftime('%Y-%m-%d %H:%M:%S')}", 'info')
+                    break  # Exit the loop
+                
+                # Write error result to Excel columns C, D, and E
                 # C column: "失敗"
                 # D column: Error details
+                # E column: Timestamp
                 try:
                     error_status = '失敗'
                     error_msg = f'失敗: エラー - {str(e)[:100]}'
+                    error_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     abs_file_path = os.path.abspath(excel_file_path)
-                    log_message(f"📝 Writing error result to Excel row {row_num}, Column C: {error_status}, Column D: {error_msg}", 'info')
+                    log_message(f"📝 Writing error result to Excel row {row_num}, Column C: {error_status}, Column D: {error_msg}, Column E: {error_timestamp}", 'info')
                     log_message(f"📝 Excel file path (absolute): {abs_file_path}", 'info')
                     
                     try:
@@ -471,9 +737,13 @@ def run_bot_task(excel_file_path, lottery_count=1):
                     result_cell = worksheet.cell(row=row_num, column=4)
                     result_cell.value = error_msg
                     
+                    # Write to column E (timestamp)
+                    timestamp_cell = worksheet.cell(row=row_num, column=5)
+                    timestamp_cell.value = error_timestamp
+                    
                     workbook.save(abs_file_path)
                     workbook.close()  # Explicitly close to ensure save
-                    log_message(f"✅ Wrote error result to Excel: Column C = '{error_status}', Column D = '{error_msg}'", 'info')
+                    log_message(f"✅ Wrote error result to Excel: Column C = '{error_status}', Column D = '{error_msg}', Column E = '{error_timestamp}'", 'info')
                     log_message(f"✅ Saved to: {abs_file_path}", 'info')
                     
                     # Reopen for next iteration
@@ -565,7 +835,7 @@ def get_status():
 @app.route('/api/start', methods=['POST'])
 def start_bot():
     """Start the bot"""
-    global bot_thread, bot_status
+    global bot_thread, bot_status, _auto_restart_file_path, _auto_restart_lottery_count
     
     if bot_status['running']:
         return jsonify({'success': False, 'message': 'Bot is already running'}), 400
@@ -636,6 +906,52 @@ def start_bot():
     except (ValueError, TypeError):
         return jsonify({'success': False, 'message': 'Invalid lottery count. Please enter a number between 1 and 5'}), 400
     
+    # Get max consecutive failures from form (default: 5 if not provided)
+    try:
+        max_consecutive_failures = int(request.form.get('max_consecutive_failures', 5))
+        if max_consecutive_failures < 1 or max_consecutive_failures > 20:
+            return jsonify({'success': False, 'message': 'Max consecutive failures must be between 1 and 20'}), 400
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'message': 'Invalid max consecutive failures. Please enter a number between 1 and 20'}), 400
+    
+    # Get restart mode and settings
+    restart_mode = request.form.get('restart_mode', 'minutes')
+    restart_minutes = None
+    restart_datetime = None
+    
+    if restart_mode == 'minutes':
+        try:
+            restart_minutes = int(request.form.get('restart_minutes', 60))
+            if restart_minutes < 1:
+                return jsonify({'success': False, 'message': 'Restart minutes must be at least 1'}), 400
+        except (ValueError, TypeError):
+            return jsonify({'success': False, 'message': 'Invalid restart minutes. Please enter a valid number'}), 400
+    elif restart_mode == 'datetime':
+        restart_datetime = request.form.get('restart_datetime')
+        if not restart_datetime:
+            return jsonify({'success': False, 'message': 'Please select a restart date and time'}), 400
+        try:
+            # Validate datetime format and check if it's in the future
+            restart_dt = datetime.strptime(restart_datetime, '%Y-%m-%dT%H:%M')
+            if restart_dt <= datetime.now():
+                return jsonify({'success': False, 'message': 'Restart datetime must be in the future'}), 400
+        except ValueError:
+            return jsonify({'success': False, 'message': 'Invalid datetime format. Please use YYYY-MM-DDTHH:MM format'}), 400
+    
+    # Cancel any existing auto-restart timer
+    global _auto_restart_timer
+    if _auto_restart_timer and _auto_restart_timer.is_alive():
+        _auto_restart_timer.cancel()
+        log_message("⏹️ Cancelled existing auto-restart timer", 'info')
+    
+    # Store file path and settings for potential auto-restart
+    _auto_restart_file_path = filepath
+    _auto_restart_lottery_count = lottery_count
+    _auto_restart_max_failures = max_consecutive_failures
+    _auto_restart_mode = restart_mode
+    _auto_restart_minutes = restart_minutes
+    _auto_restart_datetime = restart_datetime
+    
     # Reset status
     bot_status = {
         'running': True,
@@ -653,7 +969,7 @@ def start_bot():
     }
     
     # Start bot in separate thread (CAPTCHA API key is loaded from env in bot.py)
-    bot_thread = threading.Thread(target=run_bot_task, args=(filepath, lottery_count))
+    bot_thread = threading.Thread(target=run_bot_task, args=(filepath, lottery_count, max_consecutive_failures, restart_mode, restart_minutes, restart_datetime))
     bot_thread.daemon = True
     bot_thread.start()
     
@@ -772,4 +1088,3 @@ if __name__ == '__main__':
     # Disable reloader on Windows to avoid socket errors
     use_reloader = sys.platform != 'win32'
     socketio.run(app, host='0.0.0.0', port=5000, debug=True, use_reloader=use_reloader, allow_unsafe_werkzeug=True)
-

@@ -59,6 +59,55 @@
                         <small>Number of lotteries to process (1-5). Enter 1 for first lottery only, 2 for first two, etc.</small>
                     </div>
 
+                    <div class="form-group">
+                        <label for="maxConsecutiveFailures">
+                            <i class="fas fa-exclamation-triangle"></i> Maximum Consecutive Failures
+                        </label>
+                        <input type="number" id="maxConsecutiveFailures" name="max_consecutive_failures" 
+                               placeholder="Enter maximum consecutive failures" 
+                               min="1" 
+                               max="20" 
+                               value="5" 
+                               required>
+                        <small>Bot will stop after this many consecutive login failures (1-20). Default: 5</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>
+                            <i class="fas fa-clock"></i> Auto-Restart Settings
+                        </label>
+                        <div class="radio-group">
+                            <label class="radio-label">
+                                <input type="radio" name="restart_mode" value="minutes" id="restartModeMinutes" checked>
+                                <span>Restart after minutes</span>
+                            </label>
+                            <label class="radio-label">
+                                <input type="radio" name="restart_mode" value="datetime" id="restartModeDatetime">
+                                <span>Restart at specific time</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="form-group" id="restartMinutesGroup">
+                        <label for="restartMinutes">
+                            <i class="fas fa-hourglass-half"></i> Restart After (Minutes)
+                        </label>
+                        <input type="number" id="restartMinutes" name="restart_minutes" 
+                               placeholder="Enter minutes" 
+                               min="1" 
+                               value="60" 
+                               required>
+                        <small>Bot will automatically restart after this many minutes from stop time</small>
+                    </div>
+
+                    <div class="form-group" id="restartDatetimeGroup" style="display: none;">
+                        <label for="restartDatetime">
+                            <i class="fas fa-calendar-alt"></i> Restart At (Date & Time)
+                        </label>
+                        <input type="datetime-local" id="restartDatetime" name="restart_datetime">
+                        <small>Bot will automatically restart at this specific date and time</small>
+                    </div>
+
                     <div class="button-group">
                         <button type="submit" id="startBtn" class="btn btn-primary">
                             <i class="fas fa-play"></i> Start Bot
@@ -102,6 +151,10 @@
                         <div class="stat-item">
                             <span class="stat-label">Status:</span>
                             <span class="stat-value" id="currentStep">Idle</span>
+                        </div>
+                        <div class="stat-item" id="scheduledRestartItem" style="display: none;">
+                            <span class="stat-label">Scheduled Restart:</span>
+                            <span class="stat-value" id="scheduledRestart" style="color: #f59e0b;"></span>
                         </div>
                     </div>
                     <div class="progress-bar-wrapper">

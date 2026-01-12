@@ -22,6 +22,7 @@ const loadingOverlay = document.getElementById('loadingOverlay');
 
 // State
 let isRunning = false;
+let restartCountdownInterval = null;
 
 // File input handler
 excelFileInput.addEventListener('change', (e) => {
@@ -32,6 +33,25 @@ excelFileInput.addEventListener('change', (e) => {
     } else {
         fileName.textContent = 'Choose Excel file (.xlsx or .xls)';
         fileName.style.color = 'var(--text-secondary)';
+    }
+});
+
+// Restart mode toggle handler
+restartModeMinutes.addEventListener('change', () => {
+    if (restartModeMinutes.checked) {
+        restartMinutesGroup.style.display = 'block';
+        restartDatetimeGroup.style.display = 'none';
+        restartMinutes.required = true;
+        restartDatetime.required = false;
+    }
+});
+
+restartModeDatetime.addEventListener('change', () => {
+    if (restartModeDatetime.checked) {
+        restartMinutesGroup.style.display = 'none';
+        restartDatetimeGroup.style.display = 'block';
+        restartMinutes.required = false;
+        restartDatetime.required = true;
     }
 });
 
@@ -52,6 +72,33 @@ botForm.addEventListener('submit', async (e) => {
     }
     
     formData.append('file', file);
+    
+    // Get restart mode and validate
+    const restartMode = document.querySelector('input[name="restart_mode"]:checked').value;
+    formData.append('restart_mode', restartMode);
+    
+    if (restartMode === 'minutes') {
+        const minutes = parseInt(restartMinutes.value);
+        if (!minutes || minutes < 1) {
+            showNotification('Please enter a valid number of minutes (at least 1)', 'error');
+            return;
+        }
+        formData.append('restart_minutes', minutes);
+    } else if (restartMode === 'datetime') {
+        const datetime = restartDatetime.value;
+        if (!datetime) {
+            showNotification('Please select a date and time for restart', 'error');
+            return;
+        }
+        // Validate that datetime is in the future
+        const selectedDate = new Date(datetime);
+        const now = new Date();
+        if (selectedDate <= now) {
+            showNotification('Please select a future date and time', 'error');
+            return;
+        }
+        formData.append('restart_datetime', datetime);
+    }
     
     try {
         loadingOverlay.style.display = 'flex';
@@ -162,6 +209,71 @@ function updateStatus(status) {
     
     currentEmail.textContent = status.current_email || '-';
     currentStep.textContent = status.current_step || 'Idle';
+    
+    // Update scheduled restart time
+    const scheduledRestartItem = document.getElementById('scheduledRestartItem');
+    const scheduledRestart = document.getElementById('scheduledRestart');
+    
+    // Clear existing countdown interval
+    if (restartCountdownInterval) {
+        clearInterval(restartCountdownInterval);
+        restartCountdownInterval = null;
+    }
+    
+    if (status.scheduled_restart_time) {
+        scheduledRestartItem.style.display = 'block';
+        
+        // Store restart time in data attribute for countdown function
+        scheduledRestart.setAttribute('data-restart-time', status.scheduled_restart_time);
+        
+        // Function to update countdown
+        const updateCountdown = () => {
+            try {
+                const restartTimeStr = scheduledRestart.getAttribute('data-restart-time');
+                if (!restartTimeStr) {
+                    if (restartCountdownInterval) {
+                        clearInterval(restartCountdownInterval);
+                        restartCountdownInterval = null;
+                    }
+                    return;
+                }
+                
+                const restartTime = new Date(restartTimeStr);
+                const now = new Date();
+                const diffMs = restartTime - now;
+                
+                if (diffMs <= 0) {
+                    scheduledRestart.textContent = '再試行中...';
+                    if (restartCountdownInterval) {
+                        clearInterval(restartCountdownInterval);
+                        restartCountdownInterval = null;
+                    }
+                    return;
+                }
+                
+                const diffMinutes = Math.floor(diffMs / 1000 / 60);
+                const diffSeconds = Math.floor((diffMs / 1000) % 60);
+                
+                if (diffMinutes > 0) {
+                    scheduledRestart.textContent = `残り ${diffMinutes}分${diffSeconds}秒後`;
+                } else {
+                    scheduledRestart.textContent = `残り ${diffSeconds}秒後`;
+                }
+            } catch (e) {
+                console.error('Error calculating countdown:', e);
+                scheduledRestart.textContent = status.scheduled_restart_message || '再試行予定';
+            }
+        };
+        
+        // Update immediately
+        updateCountdown();
+        
+        // Update every second
+        restartCountdownInterval = setInterval(updateCountdown, 1000);
+    } else {
+        scheduledRestartItem.style.display = 'none';
+        scheduledRestart.removeAttribute('data-restart-time');
+    }
     
     // Update progress bar (based on processed emails out of total emails)
     const percentage = totalEmails > 0 ? (processedEmails / totalEmails) * 100 : 0;

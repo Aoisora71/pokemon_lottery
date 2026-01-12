@@ -1221,8 +1221,8 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
     - Processes only lotteries with status "受付中" (currently open)
     - Continues checking even if a lottery doesn't exist (up to max_lotteries)
     - Continues to next lottery even if one fails
-    - If reload occurs, restarts from first lottery
-    - After completing all lotteries, verifies all are completed by checking from first lottery again
+    - If pop04/pop05 error occurs, reloads page and restarts from first lottery
+    - Tracks completed lotteries and skips them on restart
     
     Returns:
         dict: {
@@ -1231,22 +1231,26 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
             'message': str  # Detailed message for Excel column D
         }
     """
-    max_verification_attempts = 3  # Maximum number of verification attempts after completion
-    verification_attempt = 0
+    # Track completed lotteries (successfully processed or already completed)
+    completed_lotteries = set()  # Set of lottery numbers that are completed
+    lottery_results = []  # Track results for each lottery
+    max_retry_attempts = 10  # Maximum number of retry attempts (to prevent infinite loop)
+    retry_attempt = 0
     
-    while verification_attempt < max_verification_attempts:
-        lottery_number = 1
-        processed_count = 0
-        skipped_count = 0
-        failed_count = 0
-        checked_count = 0  # Number of lotteries checked (including non-existent ones)
-        lottery_results = []  # Track results for each lottery
-        reload_occurred = False  # Track if reload occurred during processing
-        
-        if verification_attempt == 0:
+    # Initialize final_status and final_message to avoid UnboundLocalError
+    final_status = '失敗'  # Default status
+    final_message = '処理中にエラーが発生しました'
+    
+    while retry_attempt < max_retry_attempts:
+        if retry_attempt == 0:
             log(f"🔍 Starting to check up to {max_lotteries} lotteries for processing...", 'info')
         else:
-            log(f"🔍 Verification attempt {verification_attempt + 1}/{max_verification_attempts}: Re-checking all lotteries from the beginning...", 'info')
+            log(f"🔄 Retry attempt {retry_attempt + 1}/{max_retry_attempts}: Restarting from first lottery after reload...", 'info')
+            log(f"📋 Completed lotteries so far: {sorted(completed_lotteries) if completed_lotteries else 'None'}", 'info')
+        
+        reload_occurred = False  # Track if reload occurred during processing
+        lottery_number = 1
+        checked_count = 0  # Number of lotteries checked in this attempt
         
         # Check for CAPTCHA on apply page before starting lottery processing
         check_stop()
@@ -1286,6 +1290,13 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                 except Exception as e:
                     log(f"⚠️ Could not navigate to apply page: {e}. Continuing anyway...", 'warning')
             
+            # Skip if this lottery was already completed
+            if lottery_number in completed_lotteries:
+                log(f"⏭️ Lottery #{lottery_number} already completed. Skipping to next lottery...", 'info')
+                lottery_number += 1
+                checked_count += 1
+                continue
+            
             # Check if this lottery exists and get its status
             status_text, exists = _check_lottery_status(driver, wait, lottery_number)
             checked_count += 1  # Count this lottery as checked
@@ -1305,7 +1316,6 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                 log(f"📊 Lottery #{lottery_number} status: '{status_text}'", 'info')
             else:
                 log(f"📊 Lottery #{lottery_number} exists but status is empty or unavailable. Skipping...", 'warning')
-                skipped_count += 1
                 lottery_number += 1
                 continue
             
@@ -1317,19 +1327,18 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                     'status': 'スキップ(終了)',
                     'reason': f'抽選{lottery_number}は受付終了しています'
                 })
-                skipped_count += 1
                 lottery_number += 1
                 continue
             
             # Skip if already completed (受付完了)
             if status_text == "受付完了":
-                log(f"⏭️ Lottery #{lottery_number} is already completed (受付完了). Skipping to next lottery...", 'warning')
+                log(f"⏭️ Lottery #{lottery_number} is already completed (受付完了). Marking as completed and skipping...", 'warning')
+                completed_lotteries.add(lottery_number)  # Mark as completed
                 lottery_results.append({
                     'lottery': lottery_number,
                     'status': 'スキップ(完了)',
                     'reason': f'抽選{lottery_number}は受付完了しています'
                 })
-                skipped_count += 1
                 lottery_number += 1
                 continue
             
@@ -1343,27 +1352,29 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                     success = _process_lottery_entry(driver, wait, lottery_number)
                     if success:
                         log(f"✅ Lottery #{lottery_number} processed successfully!", 'success')
+                        # Mark this lottery as completed
+                        completed_lotteries.add(lottery_number)
                         lottery_results.append({
                             'lottery': lottery_number,
                             'status': '成功',
                             'reason': f'抽選{lottery_number}の処理が成功しました'
                         })
-                        processed_count += 1
                         
-                        # Check for pop04 exception message after successful lottery processing
+                        # Check for pop04/pop05 exception message after successful lottery processing
                         check_stop()
-                        pop04_reload_needed = _check_and_handle_pop_exceptions(driver, wait)
+                        pop_reload_needed = _check_and_handle_pop_exceptions(driver, wait)
                         
-                        if pop04_reload_needed:
+                        if pop_reload_needed:
                             # Page was reloaded due to exception - restart from first lottery
-                            log("⚠️ Page reloaded due to exception. Restarting from first lottery...", 'warning')
+                            log("⚠️ Page reloaded due to pop04/pop05 exception. Restarting from first lottery...", 'warning')
+                            log(f"📋 Completed lotteries: {sorted(completed_lotteries)}. Will skip these on restart.", 'info')
                             reload_occurred = True
+                            retry_attempt += 1
                             break  # Exit inner loop to restart from first lottery
                         else:
-                            # No reload needed, just brief wait before next lottery
+                            # No reload needed, move to next lottery
                             check_stop()
                             time.sleep(1)
-                            # Move to next lottery after successful processing
                             lottery_number += 1
                     else:
                         log(f"⚠️ Lottery #{lottery_number} processing failed. Continuing to next lottery...", 'warning')
@@ -1372,18 +1383,19 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                             'status': '失敗',
                             'reason': f'抽選{lottery_number}の処理が失敗しました'
                         })
-                        failed_count += 1
-                        # Check for pop04 exception message after failed lottery processing
+                        # Check for pop04/pop05 exception message after failed lottery processing
                         check_stop()
-                        pop04_reload_needed = _check_and_handle_pop_exceptions(driver, wait)
+                        pop_reload_needed = _check_and_handle_pop_exceptions(driver, wait)
                         
-                        if pop04_reload_needed:
+                        if pop_reload_needed:
                             # Page was reloaded due to exception - restart from first lottery
-                            log("⚠️ Page reloaded due to exception. Restarting from first lottery...", 'warning')
+                            log("⚠️ Page reloaded due to pop04/pop05 exception. Restarting from first lottery...", 'warning')
+                            log(f"📋 Completed lotteries: {sorted(completed_lotteries)}. Will skip these on restart.", 'info')
                             reload_occurred = True
+                            retry_attempt += 1
                             break  # Exit inner loop to restart from first lottery
                         else:
-                            # No reload needed, check if we need to navigate back to apply page
+                            # No reload needed, move to next lottery
                             if checked_count < max_lotteries:
                                 check_stop()
                                 try:
@@ -1395,7 +1407,6 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                                             time.sleep(1)
                                 except Exception as e:
                                     log(f"⚠️ Could not navigate to apply page: {e}. Continuing anyway...", 'warning')
-                            # Move to next lottery after failed processing
                             lottery_number += 1
                 except StopIteration:
                     log(f"⏹️ Lottery processing stopped by user at lottery #{lottery_number}", 'warning')
@@ -1412,18 +1423,24 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                         'status': '失敗',
                         'reason': f'抽選{lottery_number}の処理でエラーが発生しました: {str(e)[:100]}'
                     })
-                    failed_count += 1
-                    # Check for pop04 exception message after error
+                    lottery_results.append({
+                        'lottery': lottery_number,
+                        'status': '失敗',
+                        'reason': f'抽選{lottery_number}の処理でエラーが発生しました: {str(e)[:100]}'
+                    })
+                    # Check for pop04/pop05 exception message after error
                     check_stop()
-                    pop04_reload_needed = _check_and_handle_pop_exceptions(driver, wait)
+                    pop_reload_needed = _check_and_handle_pop_exceptions(driver, wait)
                     
-                    if pop04_reload_needed:
+                    if pop_reload_needed:
                         # Page was reloaded due to exception - restart from first lottery
-                        log("⚠️ Page reloaded due to exception. Restarting from first lottery...", 'warning')
+                        log("⚠️ Page reloaded due to pop04/pop05 exception. Restarting from first lottery...", 'warning')
+                        log(f"📋 Completed lotteries: {sorted(completed_lotteries)}. Will skip these on restart.", 'info')
                         reload_occurred = True
+                        retry_attempt += 1
                         break  # Exit inner loop to restart from first lottery
                     else:
-                        # No reload needed, check if we need to navigate back to apply page
+                        # No reload needed, move to next lottery
                         if checked_count < max_lotteries:
                             check_stop()
                             try:
@@ -1435,7 +1452,6 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                                         time.sleep(1)
                             except Exception as e2:
                                 log(f"⚠️ Could not navigate to apply page after error: {e2}. Continuing anyway...", 'warning')
-                        # Move to next lottery after error
                         lottery_number += 1
             else:
                 log(f"⚠️ Lottery #{lottery_number} has unexpected status: '{status_text}'. Skipping...", 'warning')
@@ -1444,120 +1460,138 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                     'status': '不明',
                     'reason': f'抽選{lottery_number}のステータスが不明です: {status_text}'
                 })
-                skipped_count += 1
                 lottery_number += 1
         
-        # Inner while loop completed - log and proceed to status determination
-        log(f"✅ Completed checking {checked_count} lotteries (max: {max_lotteries})", 'info')
-        log(f"📊 Lottery processing summary: {processed_count} processed, {skipped_count} skipped, {failed_count} failed", 'info')
-        log(f"📋 Lottery results count: {len(lottery_results)}", 'info')
-        if len(lottery_results) > 0:
-            log(f"📋 First lottery result: {lottery_results[0]}", 'info')
+        # Check if reload occurred - if yes, restart from first lottery
+        if reload_occurred:
+            log("🔄 Reload occurred. Will restart from first lottery on next attempt...", 'info')
+            continue  # Continue to next retry attempt
         
-        if processed_count > 0:
-            log(f"🎉 Successfully processed {processed_count} lottery/lotteries!", 'success')
-        
-        if failed_count > 0:
-            log(f"⚠️ {failed_count} lottery/lotteries failed to process", 'warning')
+        # Check if all lotteries have been checked
+        if checked_count >= max_lotteries:
+            # Count completed lotteries (success + skipped completed)
+            processed_count = len([r for r in lottery_results if r['status'] == '成功'])
+            skipped_completed_count = len([r for r in lottery_results if r['status'] == 'スキップ(完了)'])
+            skipped_closed_count = len([r for r in lottery_results if r['status'] == 'スキップ(終了)'])
+            failed_count = len([r for r in lottery_results if r['status'] == '失敗'])
+            
+            log(f"✅ Completed checking {checked_count} lotteries (max: {max_lotteries})", 'info')
+            log(f"📊 Lottery processing summary: {processed_count} processed, {skipped_completed_count} skipped (completed), {skipped_closed_count} skipped (closed), {failed_count} failed", 'info')
+            log(f"📋 Completed lotteries: {sorted(completed_lotteries)}", 'info')
+            
+            # Check if all required lotteries are completed
+            if len(completed_lotteries) >= max_lotteries:
+                log(f"🎉 All {max_lotteries} lotteries have been completed!", 'success')
+                final_status = '成功'
+                final_message = '成功'
+                break  # Exit retry loop - all lotteries completed
+            else:
+                # Not all lotteries completed, but no reload occurred - proceed to final status determination
+                # Continue to final status determination code below
+                pass
         
         # Determine final status and create message for Excel column D
-        # Rules:
-        # 1. All lotteries succeeded → "成功"
-        # 2. All lotteries skipped (completed) → "成功"
-        # 3. Any failure or skipped (closed) → "失敗: 詳細"
-        # 4. Mixed results (some success, some failure/skipped closed) → "失敗: 詳細"
-        
-        has_failure = False
-        has_skipped_closed = False
-        has_skipped_completed = False
-        has_success = False
-        has_not_exist = False
-        has_interrupted = False
-        
-        detail_parts = []
-        
-        for result in lottery_results:
-            status = result['status']
-            lottery_num = result['lottery']
+        # (Only if we've checked all lotteries)
+        if checked_count >= max_lotteries:
+            # Rules:
+            # 1. All lotteries succeeded → "成功"
+            # 2. All lotteries skipped (completed) → "成功"
+            # 3. Any failure or skipped (closed) → "失敗: 詳細"
+            # 4. Mixed results (some success, some failure/skipped closed) → "失敗: 詳細"
             
-            if status == '成功':
-                has_success = True
-                detail_parts.append(f'抽選{lottery_num}成功')
-            elif status == '失敗':
-                has_failure = True
-                detail_parts.append(f'抽選{lottery_num}失敗')
-            elif status == 'スキップ(終了)':
-                has_skipped_closed = True
-                detail_parts.append(f'抽選{lottery_num}受付終了')
-            elif status == 'スキップ(完了)':
-                has_skipped_completed = True
-                detail_parts.append(f'抽選{lottery_num}受付完了')
-            elif status == '存在しない':
-                has_not_exist = True
-                detail_parts.append(f'抽選{lottery_num}存在しない')
-            elif status == '中断':
-                has_interrupted = True
-                detail_parts.append(f'抽選{lottery_num}中断')
-            elif status == '不明':
-                detail_parts.append(f'抽選{lottery_num}不明')
-        
-        # Determine final status according to requirements:
-        # 1. All lotteries succeeded → "成功"
-        # 2. All lotteries skipped (completed) → "成功"
-        # 3. Any failure or skipped (closed) or not exist → "失敗"
-        # 4. Mixed (some success, some failure) → "失敗"
-        # 5. Mixed (some success, some skipped completed) → Check: if all are success or skipped completed, it's success
-        
-        # Log detailed information for debugging
-        log(f"🔍 Analyzing {len(lottery_results)} lottery results for final status...", 'info')
-        log(f"🔍 Results breakdown: success={has_success}, skipped_completed={has_skipped_completed}, skipped_closed={has_skipped_closed}, failure={has_failure}, not_exist={has_not_exist}, interrupted={has_interrupted}", 'info')
-        log(f"🔍 Detail parts: {detail_parts}", 'info')
-        
-        if has_interrupted:
-            final_status = '中断'
-            final_message = '中断: ' + '、'.join(detail_parts)
-            log(f"📋 Final status determined: {final_status} (interrupted)", 'info')
-        elif has_failure or has_skipped_closed or has_not_exist:
-            # If there's any failure, skipped (closed), or not exist, it's a failure
-            final_status = '失敗'
-            final_message = '失敗: ' + '、'.join(detail_parts)
-            log(f"📋 Final status determined: {final_status} (has failure/skipped_closed/not_exist)", 'info')
-        else:
-            # Check if all lotteries are either success or skipped (completed)
-            # This covers both cases: all success, all skipped (completed), or mixed success + skipped (completed)
-            all_success_or_completed = True
-            log(f"🔍 Checking if all lotteries are success or skipped (completed)...", 'info')
+            has_failure = False
+            has_skipped_closed = False
+            has_skipped_completed = False
+            has_success = False
+            has_not_exist = False
+            has_interrupted = False
+            
+            detail_parts = []
+            
+            detail_parts = []
+            
             for result in lottery_results:
                 status = result['status']
                 lottery_num = result['lottery']
-                log(f"🔍 Checking lottery {lottery_num}: status = '{status}'", 'info')
-                if status not in ['成功', 'スキップ(完了)']:
-                    log(f"🔍 Lottery {lottery_num} status '{status}' is not success or skipped (completed). All success/completed check failed.", 'info')
-                    all_success_or_completed = False
-                    break
+                
+                if status == '成功':
+                    has_success = True
+                    detail_parts.append(f'抽選{lottery_num}成功')
+                elif status == '失敗':
+                    has_failure = True
+                    detail_parts.append(f'抽選{lottery_num}失敗')
+                elif status == 'スキップ(終了)':
+                    has_skipped_closed = True
+                    detail_parts.append(f'抽選{lottery_num}受付終了')
+                elif status == 'スキップ(完了)':
+                    has_skipped_completed = True
+                    detail_parts.append(f'抽選{lottery_num}受付完了')
+                elif status == '存在しない':
+                    has_not_exist = True
+                    detail_parts.append(f'抽選{lottery_num}存在しない')
+                elif status == '中断':
+                    has_interrupted = True
+                    detail_parts.append(f'抽選{lottery_num}中断')
+                elif status == '不明':
+                    detail_parts.append(f'抽選{lottery_num}不明')
             
-            if all_success_or_completed:
-                # All lotteries are success or skipped (completed), it's a success
-                final_status = '成功'
-                final_message = '成功'
-                log(f"📋 Final status determined: {final_status} (all lotteries are success or skipped completed)", 'success')
-                log(f"📋 Final lottery result: {final_status} - {final_message}", 'info')
-                # Return immediately to proceed to next login
-                return {
-                    'results': lottery_results,
-                    'final_status': final_status,
-                    'message': final_message
-                }
-            else:
-                # Shouldn't reach here due to previous checks, but handle it
+            # Determine final status according to requirements:
+            # 1. All lotteries succeeded → "成功"
+            # 2. All lotteries skipped (completed) → "成功"
+            # 3. Any failure or skipped (closed) or not exist → "失敗"
+            # 4. Mixed (some success, some failure) → "失敗"
+            # 5. Mixed (some success, some skipped completed) → Check: if all are success or skipped completed, it's success
+            
+            # Log detailed information for debugging
+            log(f"🔍 Analyzing {len(lottery_results)} lottery results for final status...", 'info')
+            log(f"🔍 Results breakdown: success={has_success}, skipped_completed={has_skipped_completed}, skipped_closed={has_skipped_closed}, failure={has_failure}, not_exist={has_not_exist}, interrupted={has_interrupted}", 'info')
+            log(f"🔍 Detail parts: {detail_parts}", 'info')
+            
+            if has_interrupted:
+                final_status = '中断'
+                final_message = '中断: ' + '、'.join(detail_parts)
+                log(f"📋 Final status determined: {final_status} (interrupted)", 'info')
+            elif has_failure or has_skipped_closed or has_not_exist:
+                # If there's any failure, skipped (closed), or not exist, it's a failure
                 final_status = '失敗'
                 final_message = '失敗: ' + '、'.join(detail_parts)
-                log(f"📋 Final status determined: {final_status} (unexpected case - not all success/completed)", 'warning')
-        
-        # Increment verification attempt for next iteration (only if we didn't return above)
-        verification_attempt += 1
+                log(f"📋 Final status determined: {final_status} (has failure/skipped_closed/not_exist)", 'info')
+            else:
+                # Check if all lotteries are either success or skipped (completed)
+                # This covers both cases: all success, all skipped (completed), or mixed success + skipped (completed)
+                all_success_or_completed = True
+                log(f"🔍 Checking if all lotteries are success or skipped (completed)...", 'info')
+                for result in lottery_results:
+                    status = result['status']
+                    lottery_num = result['lottery']
+                    log(f"🔍 Checking lottery {lottery_num}: status = '{status}'", 'info')
+                    if status not in ['成功', 'スキップ(完了)']:
+                        log(f"🔍 Lottery {lottery_num} status '{status}' is not success or skipped (completed). All success/completed check failed.", 'info')
+                        all_success_or_completed = False
+                        break
+                
+                if all_success_or_completed:
+                    # All lotteries are success or skipped (completed), it's a success
+                    final_status = '成功'
+                    final_message = '成功'
+                    log(f"📋 Final status determined: {final_status} (all lotteries are success or skipped completed)", 'success')
+                    log(f"📋 Final lottery result: {final_status} - {final_message}", 'info')
+                    # Return immediately to proceed to next login
+                    return {
+                        'results': lottery_results,
+                        'final_status': final_status,
+                        'message': final_message
+                    }
+                else:
+                    # Shouldn't reach here due to previous checks, but handle it
+                    final_status = '失敗'
+                    final_message = '失敗: ' + '、'.join(detail_parts)
+                    log(f"📋 Final status determined: {final_status} (unexpected case - not all success/completed)", 'warning')
+            
+            # Break from retry loop after determining final status
+            break
     
-    # After verification loop completes (should not normally reach here if all successful)
+    # After retry loop completes - determine final status
     log(f"📋 Final lottery result: {final_status} - {final_message}", 'info')
     
     return {
