@@ -35,7 +35,7 @@ venv.bak/
 .env
 .env.local
 .env.*.local
-
+*.json
 # Credentials and Tokens
 credentials.json
 token.json

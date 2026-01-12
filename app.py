@@ -10,6 +10,7 @@ import json
 from werkzeug.utils import secure_filename
 from openpyxl import load_workbook
 import traceback
+from sheets_helper import read_sheets_data, write_sheets_result, check_sheets_access, extract_spreadsheet_id
 
 # Import bot functions
 try:
@@ -61,7 +62,8 @@ _current_log_file = None
 
 # Auto-restart scheduler
 _auto_restart_timer = None
-_auto_restart_file_path = None
+_auto_restart_spreadsheet_id = None
+_auto_restart_worksheet_name = None
 _auto_restart_lottery_count = 1
 _auto_restart_max_failures = 5
 _auto_restart_mode = 'minutes'
@@ -174,21 +176,22 @@ def log_message(message, level='info'):
 
 def start_bot_auto_restart():
     """Start the bot automatically (for auto-restart)"""
-    global bot_thread, bot_status, _auto_restart_file_path, _auto_restart_lottery_count, _auto_restart_max_failures, _auto_restart_mode, _auto_restart_minutes, _auto_restart_datetime
+    global bot_thread, bot_status, _auto_restart_spreadsheet_id, _auto_restart_worksheet_name, _auto_restart_lottery_count, _auto_restart_max_failures, _auto_restart_mode, _auto_restart_minutes, _auto_restart_datetime
     
     if bot_status['running']:
         log_message("⚠️ Bot is already running, skipping auto-restart", 'warning')
         return
     
-    if not _auto_restart_file_path:
-        log_message("⚠️ No file path stored for auto-restart", 'warning')
+    if not _auto_restart_spreadsheet_id:
+        log_message("⚠️ No spreadsheet ID stored for auto-restart", 'warning')
         return
     
-    if not os.path.exists(_auto_restart_file_path):
-        log_message(f"⚠️ Excel file not found for auto-restart: {_auto_restart_file_path}", 'warning')
+    # Check if spreadsheet is accessible
+    if not check_sheets_access(_auto_restart_spreadsheet_id, _auto_restart_worksheet_name):
+        log_message(f"⚠️ Cannot access Google Spreadsheet for auto-restart: {_auto_restart_spreadsheet_id}", 'warning')
         return
     
-    log_message(f"🔄 Auto-restarting bot with file: {_auto_restart_file_path}", 'info')
+    log_message(f"🔄 Auto-restarting bot with spreadsheet: {_auto_restart_spreadsheet_id}", 'info')
     
     # Reset status
     bot_status = {
@@ -215,13 +218,13 @@ def start_bot_auto_restart():
     restart_datetime = _auto_restart_datetime if '_auto_restart_datetime' in globals() else None
     
     # Start bot in separate thread with stored settings
-    bot_thread = threading.Thread(target=run_bot_task, args=(_auto_restart_file_path, _auto_restart_lottery_count, max_failures, restart_mode, restart_minutes, restart_datetime))
+    bot_thread = threading.Thread(target=run_bot_task, args=(_auto_restart_spreadsheet_id, _auto_restart_worksheet_name, _auto_restart_lottery_count, max_failures, restart_mode, restart_minutes, restart_datetime))
     bot_thread.daemon = True
     bot_thread.start()
     
     log_message("✅ Bot auto-restarted successfully", 'success')
 
-def run_bot_task(excel_file_path, lottery_count=1, max_consecutive_failures=5, restart_mode='minutes', restart_minutes=60, restart_datetime=None):
+def run_bot_task(spreadsheet_id, worksheet_name=None, lottery_count=1, max_consecutive_failures=5, restart_mode='minutes', restart_minutes=60, restart_datetime=None):
     """Run the bot in a separate thread. CAPTCHA API key is loaded from environment variable in bot.py"""
     global bot_status, _auto_restart_timer, _auto_restart_file_path, _auto_restart_lottery_count, _auto_restart_max_failures, _auto_restart_mode, _auto_restart_minutes, _auto_restart_datetime
     
@@ -237,35 +240,15 @@ def run_bot_task(excel_file_path, lottery_count=1, max_consecutive_failures=5, r
         
         log_message("🚀 Starting bot...", 'info')
         
-        # Load Excel file (convert to absolute path)
-        abs_excel_file_path = os.path.abspath(excel_file_path)
-        log_message(f"📄 Loading Excel file: {abs_excel_file_path}", 'info')
-        log_message(f"📄 Excel file exists: {os.path.exists(abs_excel_file_path)}", 'info')
-        log_message(f"📄 File size: {os.path.getsize(abs_excel_file_path) if os.path.exists(abs_excel_file_path) else 'N/A'} bytes", 'info')
+        # Load Google Sheets data
+        log_message(f"📄 Loading Google Spreadsheet: {spreadsheet_id}", 'info')
+        if worksheet_name:
+            log_message(f"📄 Using worksheet: {worksheet_name}", 'info')
+        else:
+            log_message(f"📄 Using first worksheet (default)", 'info')
         
-        workbook = load_workbook(abs_excel_file_path)
-        worksheet = workbook.active
-        
-        # Count total rows and track row numbers
-        rows = list(worksheet.iter_rows(min_row=1, values_only=False))
-        # Create list of (row_number, row) tuples for rows with email addresses
-        # Skip rows where column C (column 3) has "成功" status
-        data_rows = []
-        skipped_count = 0
-        total_email_count = 0
-        for i, row in enumerate(rows, start=1):
-            if row[0].value:
-                total_email_count += 1
-                # Check if column C (column 3) has "成功" status
-                column_c_value = None
-                if len(row) > 2 and row[2].value:
-                    column_c_value = str(row[2].value).strip()
-                
-                if column_c_value == "成功":
-                    skipped_count += 1
-                    log_message(f"📋 Row {i}: {row[0].value} - Column C = '成功' (will be skipped)", 'info')
-                else:
-                    data_rows.append((i, row))  # i is the actual Excel row number (1-based)
+        # Read data from Google Sheets
+        data_rows, total_email_count, skipped_count = read_sheets_data(spreadsheet_id, worksheet_name)
         
         total_rows = len(data_rows)
         bot_status['total'] = total_rows
@@ -276,15 +259,10 @@ def run_bot_task(excel_file_path, lottery_count=1, max_consecutive_failures=5, r
         bot_status['failed_count'] = 0
         bot_status['skipped_count'] = skipped_count
         
-        log_message(f"📊 Found {total_email_count} email(s) in Excel file", 'info')
+        log_message(f"📊 Found {total_email_count} email(s) in Google Spreadsheet", 'info')
         if skipped_count > 0:
             log_message(f"⏭️ Skipping {skipped_count} email(s) with '成功' status in Column C", 'info')
         log_message(f"📊 Will process {total_rows} email(s)", 'info')
-        log_message(f"📄 Excel file path (absolute): {abs_excel_file_path}", 'info')
-        log_message(f"📄 Excel file exists: {os.path.exists(abs_excel_file_path)}", 'info')
-        
-        # Update excel_file_path to use absolute path for consistency throughout the function
-        excel_file_path = abs_excel_file_path
         
         # Setup Chrome driver
         log_message("🌐 Setting up Chrome browser...", 'info')
@@ -311,25 +289,16 @@ def run_bot_task(excel_file_path, lottery_count=1, max_consecutive_failures=5, r
         
         # Process each row
         for progress_idx, row_tuple in enumerate(data_rows, start=1):
-            row_num, row = row_tuple  # Unpack (row_number, row) tuple
+            row_num, user_email, user_password = row_tuple  # Unpack (row_number, email, password) tuple
             
             if not bot_status['running']:
                 log_message("⏹️ Bot stopped by user", 'warning')
                 break
-                
-            user_email = row[0].value
-            user_password = row[1].value if len(row) > 1 else None
             
             if not user_email:
                 continue
             
-            # Check column C (column 3) for "成功" status - skip if already successful
-            column_c_value = None
-            if len(row) > 2 and row[2].value:
-                column_c_value = str(row[2].value).strip()
-            
-            if column_c_value == "成功":
-                log_message(f"⏭️ Skipping email {user_email} (Excel row {row_num}) - Column C already shows '成功'", 'info')
+            # Note: data_rows already excludes rows with "成功" status, so no need to check again
                 bot_status['current_email'] = user_email
                 bot_status['progress'] = progress_idx
                 bot_status['processed_emails'] = skipped_count + progress_idx  # Update processed count (skipped + processed so far)
@@ -344,7 +313,7 @@ def run_bot_task(excel_file_path, lottery_count=1, max_consecutive_failures=5, r
             bot_status['current_step'] = f'Processing {user_email}'
             socketio.emit('status_update', bot_status)  # Emit update before processing
             
-            log_message(f"📧 Processing email {progress_idx}/{total_rows}: {user_email} (Excel row {row_num})", 'info')
+            log_message(f"📧 Processing email {progress_idx}/{total_rows}: {user_email} (Spreadsheet row {row_num})", 'info')
             
             try:
                 # Update global EMAIL and PASSWORD for bot.py
@@ -392,107 +361,21 @@ def run_bot_task(excel_file_path, lottery_count=1, max_consecutive_failures=5, r
                     result_message = lottery_result.get('message', '不明')
                     log_message(f"📊 Lottery result for {user_email}: Status={final_status}, Details={result_message}", 'info')
                     
-                    # Write results to columns C, D, and E in the current row
-                    # row_num is the actual Excel row number
+                    # Write results to columns C, D, and E in Google Sheets
                     try:
-                        # Get current timestamp first (before it's used in log messages)
+                        # Get current timestamp first
                         timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                         
-                        # Convert to absolute path to ensure we're saving to the correct location
-                        abs_file_path = os.path.abspath(excel_file_path)
-                        log_message(f"📝 Attempting to write to Excel file (absolute path): {abs_file_path}", 'info')
-                        log_message(f"📝 Excel row number: {row_num}, Column C (3): {final_status}, Column D (4): {result_message}, Column E (5): {timestamp_str}", 'info')
+                        log_message(f"📝 Writing to Google Spreadsheet row {row_num}, Column C: {final_status}, Column D: {result_message}, Column E: {timestamp_str}", 'info')
                         
-                        # Check file exists and get modification time before save
-                        if os.path.exists(abs_file_path):
-                            mtime_before = os.path.getmtime(abs_file_path)
-                            log_message(f"📄 File exists. Modification time before save: {datetime.fromtimestamp(mtime_before)}", 'info')
-                        else:
-                            log_message(f"⚠️ File does not exist: {abs_file_path}", 'warning')
+                        # Write to Google Sheets
+                        write_sheets_result(spreadsheet_id, row_num, final_status, result_message, timestamp_str, worksheet_name)
                         
-                        # Close workbook if open, then reopen for writing
-                        # This ensures we have exclusive access
-                        try:
-                            workbook.close()
-                        except:
-                            pass
-                        
-                        # Reopen workbook in read-write mode
-                        workbook = load_workbook(abs_file_path)
-                        worksheet = workbook.active
-                        
-                        # Write to column C (final status)
-                        status_cell = worksheet.cell(row=row_num, column=3)
-                        status_cell.value = final_status
-                        log_message(f"✅ Set cell ({row_num}, 3) [Column C] value to: {final_status}", 'success')
-                        
-                        # Write to column D (detailed message)
-                        result_cell = worksheet.cell(row=row_num, column=4)
-                        result_cell.value = result_message
-                        log_message(f"✅ Set cell ({row_num}, 4) [Column D] value to: {result_message}", 'success')
-                        
-                        # Write to column E (timestamp)
-                        timestamp_cell = worksheet.cell(row=row_num, column=5)
-                        timestamp_cell.value = timestamp_str
-                        log_message(f"✅ Set cell ({row_num}, 5) [Column E] value to: {timestamp_str}", 'success')
-                        
-                        # Save workbook with absolute path (MUST save before closing)
-                        log_message(f"💾 Saving workbook to: {abs_file_path}", 'info')
-                        workbook.save(abs_file_path)
-                        
-                        # IMPORTANT: Save before closing, then close to release file lock
-                        workbook.close()
-                        
-                        # Wait a bit to ensure file system has written the changes
-                        time.sleep(0.5)
-                        
-                        # Verify file was actually updated
-                        if os.path.exists(abs_file_path):
-                            mtime_after = os.path.getmtime(abs_file_path)
-                            log_message(f"📄 File modification time after save: {datetime.fromtimestamp(mtime_after)}", 'info')
-                            if mtime_after > mtime_before:
-                                log_message(f"✅ File modification time updated - file was saved!", 'success')
-                            else:
-                                log_message(f"⚠️ File modification time did not change - file may not have been saved!", 'warning')
-                        
-                        # Reopen and verify content
-                        verify_workbook = load_workbook(abs_file_path)
-                        verify_worksheet = verify_workbook.active
-                        verify_status_cell = verify_worksheet.cell(row=row_num, column=3)
-                        verify_status_value = verify_status_cell.value
-                        verify_result_cell = verify_worksheet.cell(row=row_num, column=4)
-                        verify_result_value = verify_result_cell.value
-                        verify_timestamp_cell = verify_worksheet.cell(row=row_num, column=5)
-                        verify_timestamp_value = verify_timestamp_cell.value
-                        verify_workbook.close()
-                        
-                        if verify_status_value == final_status and verify_result_value == result_message and verify_timestamp_value == timestamp_str:
-                            log_message(f"✅ Excel file saved and verified! Row {row_num}, Column C = '{verify_status_value}', Column D = '{verify_result_value}', Column E = '{verify_timestamp_value}'", 'success')
-                            log_message(f"✅ Full file path: {abs_file_path}", 'success')
-                            log_message(f"📂 IMPORTANT: Please check this file path to see the results: {abs_file_path}", 'success')
-                            log_message(f"📂 The file is saved in the 'uploads' folder, not in your original upload location", 'info')
-                        else:
-                            log_message(f"⚠️ Verification failed:", 'warning')
-                            log_message(f"⚠️ Expected Column C: '{final_status}', got: '{verify_status_value}'", 'warning')
-                            log_message(f"⚠️ Expected Column D: '{result_message}', got: '{verify_result_value}'", 'warning')
-                            log_message(f"⚠️ Expected Column E: '{timestamp_str}', got: '{verify_timestamp_value}'", 'warning')
-                            log_message(f"⚠️ Full file path: {abs_file_path}", 'warning')
-                        
-                        # Reopen workbook for next iteration
-                        workbook = load_workbook(abs_file_path)
-                        worksheet = workbook.active
-                        
+                        log_message(f"✅ Successfully wrote to Google Spreadsheet row {row_num}", 'success')
                     except Exception as e:
-                        log_message(f"❌ Error writing to Excel: {e}", 'error')
-                        log_message(f"❌ Excel file path (absolute): {abs_file_path}", 'error')
-                        log_message(f"❌ Row: {row_num}, Columns: C (3), D (4), and E (5)", 'error')
-                        traceback.print_exc()
-                        # Try to reopen workbook even if save failed
-                        try:
-                            workbook = load_workbook(abs_file_path)
-                            worksheet = workbook.active
-                        except:
-                            pass
+                        log_message(f"❌ Error writing to Google Sheets: {str(e)}", 'error')
+                        import traceback
+                        log_message(f"❌ Traceback: {traceback.format_exc()}", 'error')
                     
                     # Update success/failed counts based on final_status
                     if final_status == '成功':
@@ -514,7 +397,8 @@ def run_bot_task(excel_file_path, lottery_count=1, max_consecutive_failures=5, r
                             bot_status['running'] = False
                             
                             # Schedule auto-restart based on mode
-                            _auto_restart_file_path = excel_file_path
+                            _auto_restart_spreadsheet_id = spreadsheet_id
+                            _auto_restart_worksheet_name = worksheet_name
                             _auto_restart_lottery_count = lottery_count
                             _auto_restart_max_failures = max_consecutive_failures
                             _auto_restart_mode = restart_mode
@@ -617,7 +501,8 @@ def run_bot_task(excel_file_path, lottery_count=1, max_consecutive_failures=5, r
                     bot_status['running'] = False
                     
                     # Schedule auto-restart based on mode
-                    _auto_restart_file_path = excel_file_path
+                    _auto_restart_spreadsheet_id = spreadsheet_id
+                    _auto_restart_worksheet_name = worksheet_name
                     _auto_restart_lottery_count = lottery_count
                     _auto_restart_max_failures = max_consecutive_failures
                     _auto_restart_mode = restart_mode
@@ -686,7 +571,7 @@ def run_bot_task(excel_file_path, lottery_count=1, max_consecutive_failures=5, r
                         log_message(f"⏰ Auto-restart scheduled for {restart_time.strftime('%Y-%m-%d %H:%M:%S')}", 'info')
                     break  # Exit the loop
                 
-                # Write error result to Excel columns C, D, and E
+                # Write error result to Google Sheets columns C, D, and E
                 # C column: "失敗"
                 # D column: Error details
                 # E column: Timestamp
@@ -694,66 +579,24 @@ def run_bot_task(excel_file_path, lottery_count=1, max_consecutive_failures=5, r
                     error_status = '失敗'
                     error_msg = f'失敗: エラー - {str(e)[:100]}'
                     error_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    abs_file_path = os.path.abspath(excel_file_path)
-                    log_message(f"📝 Writing error result to Excel row {row_num}, Column C: {error_status}, Column D: {error_msg}, Column E: {error_timestamp}", 'info')
-                    log_message(f"📝 Excel file path (absolute): {abs_file_path}", 'info')
+                    log_message(f"📝 Writing error result to Google Spreadsheet row {row_num}, Column C: {error_status}, Column D: {error_msg}, Column E: {error_timestamp}", 'info')
                     
-                    try:
-                        workbook.close()
-                    except:
-                        pass
+                    # Write to Google Sheets
+                    write_sheets_result(spreadsheet_id, row_num, error_status, error_msg, error_timestamp, worksheet_name)
                     
-                    workbook = load_workbook(abs_file_path)
-                    worksheet = workbook.active
-                    
-                    # Write to column C (status)
-                    status_cell = worksheet.cell(row=row_num, column=3)
-                    status_cell.value = error_status
-                    
-                    # Write to column D (details)
-                    result_cell = worksheet.cell(row=row_num, column=4)
-                    result_cell.value = error_msg
-                    
-                    # Write to column E (timestamp)
-                    timestamp_cell = worksheet.cell(row=row_num, column=5)
-                    timestamp_cell.value = error_timestamp
-                    
-                    workbook.save(abs_file_path)
-                    workbook.close()  # Explicitly close to ensure save
-                    log_message(f"✅ Wrote error result to Excel: Column C = '{error_status}', Column D = '{error_msg}', Column E = '{error_timestamp}'", 'info')
-                    log_message(f"✅ Saved to: {abs_file_path}", 'info')
-                    
-                    # Reopen for next iteration
-                    time.sleep(0.3)
-                    workbook = load_workbook(abs_file_path)
-                    worksheet = workbook.active
+                    log_message(f"✅ Wrote error result to Google Spreadsheet: Column C = '{error_status}', Column D = '{error_msg}', Column E = '{error_timestamp}'", 'info')
                 except Exception as save_error:
-                    log_message(f"⚠️ Could not save error result to Excel: {save_error}", 'warning')
+                    log_message(f"⚠️ Could not save error result to Google Sheets: {save_error}", 'warning')
                     traceback.print_exc()
-                    # Try to reopen workbook
-                    try:
-                        abs_file_path = os.path.abspath(excel_file_path)
-                        workbook = load_workbook(abs_file_path)
-                        worksheet = workbook.active
-                    except:
-                        pass
                 
                 traceback.print_exc()
                 continue
         
         # Ensure workbook is closed to release file lock
-        try:
-            if 'workbook' in locals():
-                workbook.close()
-                log_message("📄 Workbook closed successfully", 'info')
-        except Exception as e:
-            log_message(f"⚠️ Error closing workbook: {e}", 'warning')
-        
-        # Final message with file location
-        final_file_path = os.path.abspath(excel_file_path)
-        log_message(f"📂 IMPORTANT: All results have been saved to: {final_file_path}", 'success')
-        log_message(f"📂 The file is in the 'uploads' folder - this is NOT your original uploaded file!", 'warning')
-        log_message(f"📂 Please download or check the file at: {final_file_path}", 'info')
+        # Final message
+        log_message(f"📂 IMPORTANT: All results have been saved to Google Spreadsheet: {spreadsheet_id}", 'success')
+        if worksheet_name:
+            log_message(f"📂 Worksheet: {worksheet_name}", 'info')
         
         # Close driver gracefully
         try:
@@ -779,13 +622,8 @@ def run_bot_task(excel_file_path, lottery_count=1, max_consecutive_failures=5, r
         })
         traceback.print_exc()
     finally:
-        # Ensure workbook is closed in finally block to release file lock
-        try:
-            if 'workbook' in locals():
-                workbook.close()
-                log_message("📄 Workbook closed in finally block", 'info')
-        except Exception as e:
-            log_message(f"⚠️ Error closing workbook in finally block: {e}", 'warning')
+        # Cleanup completed
+        pass
         
         # Ensure driver is closed
         try:
@@ -812,62 +650,31 @@ def get_status():
 @app.route('/api/start', methods=['POST'])
 def start_bot():
     """Start the bot"""
-    global bot_thread, bot_status, _auto_restart_file_path, _auto_restart_lottery_count
+    global bot_thread, bot_status, _auto_restart_spreadsheet_id, _auto_restart_worksheet_name, _auto_restart_lottery_count
     
     if bot_status['running']:
         return jsonify({'success': False, 'message': 'Bot is already running'}), 400
     
-    # Get uploaded file
-    if 'file' not in request.files:
-        return jsonify({'success': False, 'message': 'No file uploaded'}), 400
+    # Get Google Spreadsheet ID
+    spreadsheet_id = request.form.get('spreadsheet_id', '').strip()
+    if not spreadsheet_id:
+        return jsonify({'success': False, 'message': 'Please enter a Google Spreadsheet ID or URL'}), 400
     
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'success': False, 'message': 'No file selected'}), 400
+    # Get worksheet name (optional)
+    worksheet_name = request.form.get('worksheet_name', '').strip()
+    if not worksheet_name:
+        worksheet_name = None
     
-    if not file.filename.endswith(('.xlsx', '.xls')):
-        return jsonify({'success': False, 'message': 'Invalid file type. Please upload Excel file (.xlsx or .xls)'}), 400
-    
-    # Save file with unique filename if file already exists or is locked
+    # Check if spreadsheet is accessible
     try:
-        filename = secure_filename(file.filename)
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        
-        # Check if file exists and if it's locked
-        if os.path.exists(filepath):
-            try:
-                # Try to open the file in append mode to check if it's locked
-                with open(filepath, 'ab'):
-                    pass
-                # File exists but not locked, generate unique name
-                base_name, ext = os.path.splitext(filename)
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-                filename = f"{base_name}_{timestamp}{ext}"
-                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            except (PermissionError, IOError):
-                # File is locked, generate unique name
-                base_name, ext = os.path.splitext(filename)
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-                filename = f"{base_name}_{timestamp}{ext}"
-                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        
-        # Save the file
-        file.save(filepath)
-        log_message(f"📄 File saved to: {filepath}", 'info')
-        
-    except PermissionError as e:
-        # If still locked, try with unique timestamp filename
-        base_name, ext = os.path.splitext(secure_filename(file.filename))
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-        filename = f"{base_name}_{timestamp}{ext}"
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
-        log_message(f"⚠️ Original file was locked, saved with unique name: {filename}", 'warning')
-        log_message(f"📄 File saved to: {filepath}", 'info')
+        if not check_sheets_access(spreadsheet_id, worksheet_name):
+            return jsonify({'success': False, 'message': 'Cannot access Google Spreadsheet. Please check the ID/URL and ensure the service account has access.'}), 400
     except Exception as e:
-        error_msg = f"Failed to save uploaded file: {str(e)}"
-        log_message(f"❌ {error_msg}", 'error')
-        return jsonify({'success': False, 'message': error_msg}), 500
+        return jsonify({'success': False, 'message': f'Error accessing Google Spreadsheet: {str(e)}'}), 400
+    
+    log_message(f"📄 Using Google Spreadsheet: {spreadsheet_id}", 'info')
+    if worksheet_name:
+        log_message(f"📄 Using worksheet: {worksheet_name}", 'info')
     
     # CAPTCHA API key is loaded from environment variable in bot.py
     # Check if CAPTCHA API key is set in environment
@@ -924,8 +731,9 @@ def start_bot():
         except:
             pass
     
-    # Store file path and settings for potential auto-restart
-    _auto_restart_file_path = filepath
+    # Store spreadsheet ID and settings for potential auto-restart
+    _auto_restart_spreadsheet_id = spreadsheet_id
+    _auto_restart_worksheet_name = worksheet_name
     _auto_restart_lottery_count = lottery_count
     _auto_restart_max_failures = max_consecutive_failures
     _auto_restart_mode = restart_mode
@@ -949,7 +757,7 @@ def start_bot():
     }
     
     # Start bot in separate thread (CAPTCHA API key is loaded from env in bot.py)
-    bot_thread = threading.Thread(target=run_bot_task, args=(filepath, lottery_count, max_consecutive_failures, restart_mode, restart_minutes, restart_datetime))
+    bot_thread = threading.Thread(target=run_bot_task, args=(spreadsheet_id, worksheet_name, lottery_count, max_consecutive_failures, restart_mode, restart_minutes, restart_datetime))
     bot_thread.daemon = True
     bot_thread.start()
     
@@ -997,6 +805,29 @@ def download_logs():
             return jsonify({'success': False, 'message': 'Log file not found'}), 404
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/api/check-spreadsheet', methods=['POST'])
+def check_spreadsheet():
+    """Check if Google Spreadsheet is accessible"""
+    try:
+        data = request.get_json()
+        spreadsheet_id = data.get('spreadsheet_id', '').strip()
+        worksheet_name = data.get('worksheet_name')
+        
+        if not spreadsheet_id:
+            return jsonify({'success': False, 'message': 'Spreadsheet ID is required'}), 400
+        
+        if worksheet_name and not worksheet_name.strip():
+            worksheet_name = None
+        elif worksheet_name:
+            worksheet_name = worksheet_name.strip()
+        
+        if check_sheets_access(spreadsheet_id, worksheet_name):
+            return jsonify({'success': True, 'message': 'Spreadsheet is accessible'})
+        else:
+            return jsonify({'success': False, 'message': 'Cannot access spreadsheet. Please check the ID/URL and ensure the service account has access.'}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Error checking spreadsheet: {str(e)}'}), 500
 
 @app.route('/api/logs/list', methods=['GET'])
 def list_log_files():
