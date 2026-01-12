@@ -1349,8 +1349,18 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                 time.sleep(1)  # Brief wait before processing
                 
                 try:
-                    success = _process_lottery_entry(driver, wait, lottery_number)
-                    if success:
+                    result = _process_lottery_entry(driver, wait, lottery_number)
+                    
+                    # Check if reload is needed (pop04/pop05 error detected after apply button click)
+                    if result == 'reload_needed':
+                        # Page was reloaded due to exception - restart from first lottery
+                        log("⚠️ Page reloaded due to pop04/pop05 exception after apply button click. Restarting from first lottery...", 'warning')
+                        log(f"📋 Completed lotteries: {sorted(completed_lotteries)}. Will skip these on restart.", 'info')
+                        reload_occurred = True
+                        retry_attempt += 1
+                        break  # Exit inner loop to restart from first lottery
+                    
+                    if result == True:
                         log(f"✅ Lottery #{lottery_number} processed successfully!", 'success')
                         # Mark this lottery as completed
                         completed_lotteries.add(lottery_number)
@@ -1423,11 +1433,6 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                         'status': '失敗',
                         'reason': f'抽選{lottery_number}の処理でエラーが発生しました: {str(e)[:100]}'
                     })
-                    lottery_results.append({
-                        'lottery': lottery_number,
-                        'status': '失敗',
-                        'reason': f'抽選{lottery_number}の処理でエラーが発生しました: {str(e)[:100]}'
-                    })
                     # Check for pop04/pop05 exception message after error
                     check_stop()
                     pop_reload_needed = _check_and_handle_pop_exceptions(driver, wait)
@@ -1479,12 +1484,55 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
             log(f"📊 Lottery processing summary: {processed_count} processed, {skipped_completed_count} skipped (completed), {skipped_closed_count} skipped (closed), {failed_count} failed", 'info')
             log(f"📋 Completed lotteries: {sorted(completed_lotteries)}", 'info')
             
-            # Check if all required lotteries are completed
+            # After all lotteries have been checked, verify if there are any "受付中" lotteries remaining
+            log("🔍 Verifying if there are any remaining '受付中' lotteries...", 'info')
+            has_open_lotteries = False
+            for check_lottery_num in range(1, max_lotteries + 1):
+                check_stop()
+                status_text, exists = _check_lottery_status(driver, wait, check_lottery_num)
+                if exists and status_text == "受付中":
+                    log(f"⚠️ Lottery #{check_lottery_num} is still '受付中'. Will retry processing...", 'warning')
+                    has_open_lotteries = True
+                    # Remove from completed_lotteries if it was marked as completed
+                    if check_lottery_num in completed_lotteries:
+                        completed_lotteries.remove(check_lottery_num)
+                        # Update result status
+                        for result in lottery_results:
+                            if result['lottery'] == check_lottery_num and result['status'] == '成功':
+                                result['status'] = '失敗'
+                                result['reason'] = f'抽選{check_lottery_num}は再確認時に「受付中」でした'
+                                break
+            
+            # If there are open lotteries, retry processing
+            if has_open_lotteries:
+                log("🔄 Found remaining '受付中' lotteries. Starting retry attempt to process them...", 'info')
+                retry_attempt += 1
+                continue  # Continue to next retry attempt
+            
+            # Check if all required lotteries are completed (no open lotteries found)
             if len(completed_lotteries) >= max_lotteries:
-                log(f"🎉 All {max_lotteries} lotteries have been completed!", 'success')
-                final_status = '成功'
-                final_message = '成功'
-                break  # Exit retry loop - all lotteries completed
+                log(f"🎉 All {max_lotteries} lotteries have been completed and verified!", 'success')
+                # Final verification: check all lotteries one more time to ensure they are all completed
+                all_verified_completed = True
+                for verify_lottery_num in range(1, max_lotteries + 1):
+                    check_stop()
+                    status_text, exists = _check_lottery_status(driver, wait, verify_lottery_num)
+                    if exists and status_text not in ["受付完了", "受付終了"]:
+                        if status_text == "受付中":
+                            log(f"⚠️ Final verification: Lottery #{verify_lottery_num} is still '受付中'. Not all lotteries completed.", 'warning')
+                            all_verified_completed = False
+                            break
+                
+                if all_verified_completed:
+                    final_status = '成功'
+                    final_message = '成功'
+                    log(f"✅ Final verification passed: All lotteries are completed!", 'success')
+                    break  # Exit retry loop - all lotteries completed and verified
+                else:
+                    # Some lotteries are still open, continue to retry
+                    log("🔄 Final verification failed: Some lotteries are still open. Starting another retry attempt...", 'info')
+                    retry_attempt += 1
+                    continue
             else:
                 # Not all lotteries completed, but no reload occurred - proceed to final status determination
                 # Continue to final status determination code below
@@ -1571,25 +1619,60 @@ def _process_all_lotteries(driver, wait, max_lotteries=1):
                         break
                 
                 if all_success_or_completed:
-                    # All lotteries are success or skipped (completed), it's a success
+                    # All lotteries are success or skipped (completed), but need final verification
                     final_status = '成功'
                     final_message = '成功'
-                    log(f"📋 Final status determined: {final_status} (all lotteries are success or skipped completed)", 'success')
-                    log(f"📋 Final lottery result: {final_status} - {final_message}", 'info')
-                    # Return immediately to proceed to next login
-                    return {
-                        'results': lottery_results,
-                        'final_status': final_status,
-                        'message': final_message
-                    }
+                    log(f"📋 Preliminary status determined: {final_status} (all lotteries are success or skipped completed)", 'success')
+                    # Continue to final verification below
                 else:
                     # Shouldn't reach here due to previous checks, but handle it
                     final_status = '失敗'
                     final_message = '失敗: ' + '、'.join(detail_parts)
                     log(f"📋 Final status determined: {final_status} (unexpected case - not all success/completed)", 'warning')
+                    # Break from retry loop after determining final status
+                    break
             
-            # Break from retry loop after determining final status
-            break
+            # Perform final verification before breaking
+            if final_status == '成功':
+                # Final verification: check all lotteries one more time to ensure they are all completed
+                log("🔍 Performing final verification: Checking all lotteries one more time...", 'info')
+                all_final_verified = True
+                for final_verify_num in range(1, max_lotteries + 1):
+                    check_stop()
+                    status_text, exists = _check_lottery_status(driver, wait, final_verify_num)
+                    if exists:
+                        if status_text == "受付中":
+                            log(f"⚠️ Final verification: Lottery #{final_verify_num} is still '受付中'. Not all lotteries completed.", 'warning')
+                            all_final_verified = False
+                            # Remove from completed if it was marked as completed
+                            if final_verify_num in completed_lotteries:
+                                completed_lotteries.remove(final_verify_num)
+                            # Update result
+                            for result in lottery_results:
+                                if result['lottery'] == final_verify_num:
+                                    if result['status'] == '成功':
+                                        result['status'] = '失敗'
+                                        result['reason'] = f'抽選{final_verify_num}は最終確認時に「受付中」でした'
+                                    break
+                
+                if all_final_verified:
+                    log(f"✅ Final verification passed: All lotteries are completed. Final status: {final_status}", 'success')
+                    break  # Exit retry loop
+                else:
+                    # Some lotteries are still open - retry if attempts remain
+                    if retry_attempt < max_retry_attempts - 1:
+                        log("🔄 Final verification failed: Some lotteries are still open. Starting another retry attempt...", 'info')
+                        retry_attempt += 1
+                        continue
+                    else:
+                        # Max attempts reached - use failure status
+                        final_status = '失敗'
+                        final_message = '失敗: 最終確認時に「受付中」の抽選が残っていました'
+                        log(f"⚠️ Max retry attempts reached. Final status: {final_status}", 'warning')
+                        break
+            else:
+                # Final status is already failure - break
+                break
     
     # After retry loop completes - determine final status
     log(f"📋 Final lottery result: {final_status} - {final_message}", 'info')
@@ -1947,7 +2030,13 @@ def _check_and_handle_pop_exceptions(driver, wait, max_reload_attempts=5):
         return False  # No reload needed
 
 def _process_lottery_entry(driver, wait, lottery_number=1):
-    """Process lottery entry for a specific lottery number. Returns True on success, False on failure."""
+    """
+    Process lottery entry for a specific lottery number.
+    Returns:
+        - True on success
+        - False on failure
+        - 'reload_needed' if pop04/pop05 error detected and page was reloaded (needs restart from first lottery)
+    """
     try:
         check_stop()
         log(f"🎰 Processing lottery #{lottery_number}...", 'info')
@@ -2150,6 +2239,15 @@ def _process_lottery_entry(driver, wait, lottery_number=1):
         for _ in range(5):
             check_stop()
             time.sleep(1)
+        
+        # Immediately check for pop04/pop05 errors after apply button click
+        check_stop()
+        log("🔍 Checking for pop04/pop05 errors immediately after apply button click...", 'info')
+        pop_reload_needed_after_apply = _check_and_handle_pop_exceptions(driver, wait, max_reload_attempts=5)
+        if pop_reload_needed_after_apply:
+            log("⚠️ Pop04/pop05 error detected after apply button click. Page reloaded - will restart from first lottery.", 'warning')
+            # Return special value to indicate reload is needed
+            return 'reload_needed'
         
         # Check if page was reloaded or navigated after submission
         check_stop()

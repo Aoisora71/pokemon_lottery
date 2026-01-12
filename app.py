@@ -202,6 +202,8 @@ def start_bot_auto_restart():
         'failed_count': 0,
         'skipped_count': 0,
         'current_step': 'Auto-restarting...',
+        'scheduled_restart_time': None,  # Clear scheduled restart time on auto-restart
+        'scheduled_restart_message': None,
         'logs': [],
         'errors': []
     }
@@ -226,6 +228,8 @@ def run_bot_task(excel_file_path, lottery_count=1, max_consecutive_failures=5, r
     try:
         bot_status['running'] = True
         bot_status['errors'] = []
+        bot_status['scheduled_restart_time'] = None  # Clear scheduled restart time when starting
+        bot_status['scheduled_restart_message'] = None
         
         # Initialize consecutive failure counter
         consecutive_failures = 0
@@ -388,9 +392,12 @@ def run_bot_task(excel_file_path, lottery_count=1, max_consecutive_failures=5, r
                     result_message = lottery_result.get('message', '不明')
                     log_message(f"📊 Lottery result for {user_email}: Status={final_status}, Details={result_message}", 'info')
                     
-                    # Write results to columns C and D in the current row
+                    # Write results to columns C, D, and E in the current row
                     # row_num is the actual Excel row number
                     try:
+                        # Get current timestamp first (before it's used in log messages)
+                        timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        
                         # Convert to absolute path to ensure we're saving to the correct location
                         abs_file_path = os.path.abspath(excel_file_path)
                         log_message(f"📝 Attempting to write to Excel file (absolute path): {abs_file_path}", 'info')
@@ -413,9 +420,6 @@ def run_bot_task(excel_file_path, lottery_count=1, max_consecutive_failures=5, r
                         # Reopen workbook in read-write mode
                         workbook = load_workbook(abs_file_path)
                         worksheet = workbook.active
-                        
-                        # Get current timestamp
-                        timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                         
                         # Write to column C (final status)
                         status_cell = worksheet.cell(row=row_num, column=3)
@@ -518,21 +522,21 @@ def run_bot_task(excel_file_path, lottery_count=1, max_consecutive_failures=5, r
                             _auto_restart_datetime = restart_datetime
                             
                             # Cancel existing timer if any
-                            if _auto_restart_timer and _auto_restart_timer.is_alive():
-                                _auto_restart_timer.cancel()
+                            if _auto_restart_timer:
+                                try:
+                                    _auto_restart_timer.cancel()
+                                except:
+                                    pass
                             
                             # Calculate restart time based on mode
+                            restart_time = None
+                            restart_seconds = 0
+                            
                             if restart_mode == 'minutes':
                                 # Restart after specified minutes
                                 restart_seconds = restart_minutes * 60
                                 restart_time = datetime.now() + timedelta(seconds=restart_seconds)
                                 log_message(f"⏰ Bot will automatically restart after {restart_minutes} minutes...", 'info')
-                                
-                                def schedule_restart():
-                                    time.sleep(restart_seconds)
-                                    if not bot_status['running']:
-                                        log_message(f"🔄 Auto-restarting bot after {restart_minutes} minutes wait...", 'info')
-                                        start_bot_auto_restart()
                             else:
                                 # Restart at specific datetime
                                 if restart_datetime:
@@ -544,44 +548,38 @@ def run_bot_task(excel_file_path, lottery_count=1, max_consecutive_failures=5, r
                                         if restart_dt <= now:
                                             log_message(f"⚠️ Specified restart time is in the past. Restarting immediately...", 'warning')
                                             restart_seconds = 0
+                                            restart_time = now
                                         else:
-                                            restart_seconds = (restart_dt - now).total_seconds()
+                                            restart_seconds = int((restart_dt - now).total_seconds())
+                                            restart_time = restart_dt
                                         
-                                        restart_time = restart_dt
                                         log_message(f"⏰ Bot will automatically restart at {restart_time.strftime('%Y-%m-%d %H:%M:%S')}...", 'info')
-                                        
-                                        def schedule_restart():
-                                            time.sleep(restart_seconds)
-                                            if not bot_status['running']:
-                                                log_message(f"🔄 Auto-restarting bot at scheduled time...", 'info')
-                                                start_bot_auto_restart()
                                     except Exception as e:
                                         log_message(f"❌ Error parsing restart datetime: {e}. Using default 60 minutes...", 'error')
                                         restart_seconds = 3600
                                         restart_time = datetime.now() + timedelta(hours=1)
-                                        
-                                        def schedule_restart():
-                                            time.sleep(restart_seconds)
-                                            if not bot_status['running']:
-                                                log_message(f"🔄 Auto-restarting bot after 1 hour wait...", 'info')
-                                                start_bot_auto_restart()
                                 else:
                                     # Fallback to 60 minutes if datetime not provided
                                     restart_seconds = 3600
                                     restart_time = datetime.now() + timedelta(hours=1)
                                     log_message(f"⏰ Bot will automatically restart after 60 minutes (default)...", 'info')
-                                    
-                                    def schedule_restart():
-                                        time.sleep(restart_seconds)
-                                        if not bot_status['running']:
-                                            log_message(f"🔄 Auto-restarting bot after 1 hour wait...", 'info')
-                                            start_bot_auto_restart()
                             
-                            _auto_restart_timer = threading.Thread(target=schedule_restart)
+                            # Update bot_status with scheduled restart time
+                            if restart_time:
+                                bot_status['scheduled_restart_time'] = restart_time.isoformat()
+                                socketio.emit('status_update', bot_status)
+                            
+                            # Schedule auto-restart using threading.Timer
+                            def schedule_restart():
+                                if not bot_status['running']:
+                                    log_message(f"🔄 Auto-restarting bot...", 'info')
+                                    start_bot_auto_restart()
+                            
+                            _auto_restart_timer = threading.Timer(restart_seconds, schedule_restart)
                             _auto_restart_timer.daemon = True
                             _auto_restart_timer.start()
                             
-                            if 'restart_time' in locals():
+                            if restart_time:
                                 log_message(f"⏰ Auto-restart scheduled for {restart_time.strftime('%Y-%m-%d %H:%M:%S')}", 'info')
                             break  # Exit the loop
                     
@@ -627,25 +625,21 @@ def run_bot_task(excel_file_path, lottery_count=1, max_consecutive_failures=5, r
                     _auto_restart_datetime = restart_datetime
                     
                     # Cancel existing timer if any
-                    if _auto_restart_timer and _auto_restart_timer.is_alive():
-                        _auto_restart_timer.cancel()
+                    if _auto_restart_timer:
+                        try:
+                            _auto_restart_timer.cancel()
+                        except:
+                            pass
                     
                     # Calculate restart time based on mode
                     restart_time = None
-                    restart_message = None
+                    restart_seconds = 0
                     
                     if restart_mode == 'minutes':
                         # Restart after specified minutes
                         restart_seconds = restart_minutes * 60
                         restart_time = datetime.now() + timedelta(seconds=restart_seconds)
-                        restart_message = f"{restart_minutes}分後"
                         log_message(f"⏰ Bot will automatically restart after {restart_minutes} minutes...", 'info')
-                        
-                        def schedule_restart():
-                            time.sleep(restart_seconds)
-                            if not bot_status['running']:
-                                log_message(f"🔄 Auto-restarting bot after {restart_minutes} minutes wait...", 'info')
-                                start_bot_auto_restart()
                     else:
                         # Restart at specific datetime
                         if restart_datetime:
@@ -658,50 +652,33 @@ def run_bot_task(excel_file_path, lottery_count=1, max_consecutive_failures=5, r
                                     log_message(f"⚠️ Specified restart time is in the past. Restarting immediately...", 'warning')
                                     restart_seconds = 0
                                     restart_time = now
-                                    restart_message = "すぐに"
                                 else:
-                                    restart_seconds = (restart_dt - now).total_seconds()
+                                    restart_seconds = int((restart_dt - now).total_seconds())
                                     restart_time = restart_dt
-                                    restart_message = restart_time.strftime('%Y-%m-%d %H:%M:%S')
                                 
                                 log_message(f"⏰ Bot will automatically restart at {restart_time.strftime('%Y-%m-%d %H:%M:%S')}...", 'info')
-                                
-                                def schedule_restart():
-                                    time.sleep(restart_seconds)
-                                    if not bot_status['running']:
-                                        log_message(f"🔄 Auto-restarting bot at scheduled time...", 'info')
-                                        start_bot_auto_restart()
                             except Exception as e:
                                 log_message(f"❌ Error parsing restart datetime: {e}. Using default 60 minutes...", 'error')
                                 restart_seconds = 3600
                                 restart_time = datetime.now() + timedelta(hours=1)
-                                restart_message = "60分後"
-                                
-                                def schedule_restart():
-                                    time.sleep(restart_seconds)
-                                    if not bot_status['running']:
-                                        log_message(f"🔄 Auto-restarting bot after 1 hour wait...", 'info')
-                                        start_bot_auto_restart()
                         else:
                             # Fallback to 60 minutes if datetime not provided
                             restart_seconds = 3600
                             restart_time = datetime.now() + timedelta(hours=1)
-                            restart_message = "60分後"
                             log_message(f"⏰ Bot will automatically restart after 60 minutes (default)...", 'info')
-                            
-                            def schedule_restart():
-                                time.sleep(restart_seconds)
-                                if not bot_status['running']:
-                                    log_message(f"🔄 Auto-restarting bot after 1 hour wait...", 'info')
-                                    start_bot_auto_restart()
                     
                     # Update bot_status with scheduled restart time
                     if restart_time:
                         bot_status['scheduled_restart_time'] = restart_time.isoformat()
-                        bot_status['scheduled_restart_message'] = restart_message
                         socketio.emit('status_update', bot_status)
                     
-                    _auto_restart_timer = threading.Thread(target=schedule_restart)
+                    # Schedule auto-restart using threading.Timer
+                    def schedule_restart():
+                        if not bot_status['running']:
+                            log_message(f"🔄 Auto-restarting bot...", 'info')
+                            start_bot_auto_restart()
+                    
+                    _auto_restart_timer = threading.Timer(restart_seconds, schedule_restart)
                     _auto_restart_timer.daemon = True
                     _auto_restart_timer.start()
                     
@@ -940,9 +917,12 @@ def start_bot():
     
     # Cancel any existing auto-restart timer
     global _auto_restart_timer
-    if _auto_restart_timer and _auto_restart_timer.is_alive():
-        _auto_restart_timer.cancel()
-        log_message("⏹️ Cancelled existing auto-restart timer", 'info')
+    if _auto_restart_timer:
+        try:
+            _auto_restart_timer.cancel()
+            log_message("⏹️ Cancelled existing auto-restart timer", 'info')
+        except:
+            pass
     
     # Store file path and settings for potential auto-restart
     _auto_restart_file_path = filepath

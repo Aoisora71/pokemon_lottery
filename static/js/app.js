@@ -251,14 +251,23 @@ function updateStatus(status) {
                     return;
                 }
                 
-                const diffMinutes = Math.floor(diffMs / 1000 / 60);
-                const diffSeconds = Math.floor((diffMs / 1000) % 60);
+                // Calculate hours, minutes, and seconds
+                const totalSeconds = Math.floor(diffMs / 1000);
+                const hours = Math.floor(totalSeconds / 3600);
+                const minutes = Math.floor((totalSeconds % 3600) / 60);
+                const seconds = totalSeconds % 60;
                 
-                if (diffMinutes > 0) {
-                    scheduledRestart.textContent = `残り ${diffMinutes}分${diffSeconds}秒後`;
-                } else {
-                    scheduledRestart.textContent = `残り ${diffSeconds}秒後`;
+                // Format as "残りX時Y分Z秒後" (only show non-zero values)
+                let timeString = '残り';
+                if (hours > 0) {
+                    timeString += `${hours}時`;
                 }
+                if (minutes > 0) {
+                    timeString += `${minutes}分`;
+                }
+                timeString += `${seconds}秒後`;
+                
+                scheduledRestart.textContent = timeString;
             } catch (e) {
                 console.error('Error calculating countdown:', e);
                 scheduledRestart.textContent = status.scheduled_restart_message || '再試行予定';
