@@ -5,8 +5,9 @@ const socket = io();
 const botForm = document.getElementById('botForm');
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
-const excelFileInput = document.getElementById('excelFile');
-const fileName = document.getElementById('fileName');
+const spreadsheetIdInput = document.getElementById('spreadsheetId');
+const worksheetNameInput = document.getElementById('worksheetName');
+const spreadsheetStatus = document.getElementById('spreadsheetStatus');
 const logsContainer = document.getElementById('logsContainer');
 const clearLogsBtn = document.getElementById('clearLogsBtn');
 const statusIndicator = document.getElementById('statusIndicator');
@@ -24,15 +25,41 @@ const loadingOverlay = document.getElementById('loadingOverlay');
 let isRunning = false;
 let restartCountdownInterval = null;
 
-// File input handler
-excelFileInput.addEventListener('change', (e) => {
-    const file = e.target.files[0];
-    if (file) {
-        fileName.textContent = file.name;
-        fileName.style.color = 'var(--text-primary)';
-    } else {
-        fileName.textContent = 'Choose Excel file (.xlsx or .xls)';
-        fileName.style.color = 'var(--text-secondary)';
+// Spreadsheet ID input handler - check access on blur
+spreadsheetIdInput.addEventListener('blur', async () => {
+    const spreadsheetId = spreadsheetIdInput.value.trim();
+    if (!spreadsheetId) {
+        spreadsheetStatus.textContent = '';
+        spreadsheetStatus.style.color = '';
+        return;
+    }
+    
+    spreadsheetStatus.textContent = 'Checking access...';
+    spreadsheetStatus.style.color = '#6b7280';
+    
+    try {
+        const response = await fetch('/api/check-spreadsheet', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                spreadsheet_id: spreadsheetId,
+                worksheet_name: worksheetNameInput.value.trim() || null
+            })
+        });
+        
+        const data = await response.json();
+        if (data.success) {
+            spreadsheetStatus.textContent = '✓ Spreadsheet accessible';
+            spreadsheetStatus.style.color = '#10b981';
+        } else {
+            spreadsheetStatus.textContent = '✗ ' + (data.message || 'Cannot access spreadsheet');
+            spreadsheetStatus.style.color = '#ef4444';
+        }
+    } catch (error) {
+        spreadsheetStatus.textContent = '✗ Error checking access';
+        spreadsheetStatus.style.color = '#ef4444';
     }
 });
 
@@ -64,14 +91,19 @@ botForm.addEventListener('submit', async (e) => {
     }
     
     const formData = new FormData(botForm);
-    const file = excelFileInput.files[0];
+    const spreadsheetId = spreadsheetIdInput.value.trim();
     
-    if (!file) {
-        showNotification('Please select an Excel file', 'error');
+    if (!spreadsheetId) {
+        showNotification('Please enter a Google Spreadsheet ID or URL', 'error');
         return;
     }
     
-    formData.append('file', file);
+    formData.append('spreadsheet_id', spreadsheetId);
+    
+    const worksheetName = worksheetNameInput.value.trim();
+    if (worksheetName) {
+        formData.append('worksheet_name', worksheetName);
+    }
     
     // Get restart mode and validate
     const restartMode = document.querySelector('input[name="restart_mode"]:checked').value;
