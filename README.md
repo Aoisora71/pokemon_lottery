@@ -55,14 +55,16 @@ Create a `.env` file in the project root:
 
 ```env
 CAPTCHA_API_KEY=your_2captcha_api_key_here
-EMAIL=your_email@example.com
 PASSWORD=your_password_here
 ```
 
 **Note:** Replace the placeholder values with your actual credentials:
 - `CAPTCHA_API_KEY`: Get this from [2Captcha.com](https://2captcha.com/)
-- `EMAIL`: Your login email address
-- `PASSWORD`: Your login password
+- `PASSWORD`: Your login password (optional - can also be provided in Excel file column B)
+
+**Important:**
+- **EMAIL**: Must be provided in the Excel file (Column A), not in `.env` file
+- **PASSWORD**: Can be provided in `.env` file OR in Excel file (Column B). If provided in both, Excel file takes precedence.
 
 ### 4. Run the Web Interface
 
@@ -290,6 +292,4 @@ This bot is for educational purposes only. Users are responsible for ensuring th
 
 Use at your own risk.
 
----
-
-**Made with ❤️ for Pokemon fans**
+---**Made with ❤️ for Pokemon fans**
